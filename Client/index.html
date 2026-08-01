@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Browser zoom is disabled because pinching is forwarded to the view transform instead. Letting
+     the page zoom too would fight the canvas transform and break coordinate mapping. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>screenlink</title>
 <style>
   :root {
@@ -66,10 +68,25 @@
     max-width: 100%; max-height: 100%;
     border-radius: 8px; border: 1px solid var(--border);
     background: #000; display: block; cursor: default;
-    /* Gestures are forwarded to the Mac, so the browser must not claim them for pan and zoom. */
+    /* Gestures are interpreted here, so the browser must not claim them for pan and zoom. */
     touch-action: none;
+    /* Scaling from the top-left keeps the zoom-about-a-point arithmetic simple. */
+    transform-origin: 0 0;
   }
   canvas.controlling { cursor: crosshair; }
+  /* The soft keyboard only appears for a focused, editable element, so there has to be one. It is
+     positioned rather than hidden because display:none and visibility:hidden are not focusable. */
+  #keyboard-sink {
+    position: absolute; opacity: 0; pointer-events: none;
+    width: 1px; height: 1px; bottom: 0; left: 0; border: 0;
+  }
+  .touch-only { display: none; }
+  @media (pointer: coarse) {
+    .touch-only { display: inline-block; }
+    .stats { display: none; }
+    header { gap: 8px; padding: 8px 10px; }
+    select { max-width: 120px; }
+  }
   #overlay {
     position: absolute; inset: 16px;
     display: flex; align-items: center; justify-content: center;
@@ -89,6 +106,8 @@
   <span class="brand"><span class="dot" id="dot"></span>screenlink</span>
   <select id="display" title="Which display to stream"></select>
   <button id="control">Enable control</button>
+  <button id="keyboard" class="touch-only">Keyboard</button>
+  <button id="zoomreset" class="touch-only">Fit</button>
   <button id="fullscreen">Fullscreen</button>
   <div class="spacer"></div>
   <div class="stats">
@@ -100,8 +119,9 @@
 </header>
 <main>
   <canvas id="screen"></canvas>
+  <input id="keyboard-sink" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
   <div id="overlay">connecting…</div>
-  <div class="hint" id="hint">control disabled — this view is read-only</div>
+  <div class="hint" id="hint"></div>
 </main>
 
 <script>
@@ -333,67 +353,277 @@ canvas.addEventListener('wheel', (e) => {
   send({ type: 'scroll', dx: e.deltaX, dy: e.deltaY, ...normalized(e), ...modifiers(e) });
 }, { passive: false });
 
+// ---- view transform --------------------------------------------------------
+
+// A phone screen is a fraction of the size of the Mac's, so the view needs its own zoom and pan
+// that are entirely local: nothing here is sent to the Mac. Because the transform is CSS,
+// getBoundingClientRect already reports the transformed box, so normalized() keeps working and
+// taps land on the right pixel at any zoom level.
+const view = { scale: 1, x: 0, y: 0 };
+const MAX_SCALE = 8;
+const zoomResetBtn = document.getElementById('zoomreset');
+const isTouch = matchMedia('(pointer: coarse)').matches;
+
+// Gestures are only discoverable if something says what they are.
+function describeControls() {
+  if (!isTouch) {
+    return controlling
+      ? 'control enabled — your input is going to the Mac'
+      : 'control disabled — this view is read-only';
+  }
+  return controlling
+    ? 'tap to click · hold for right-click · two fingers zoom and pan · three fingers scroll'
+    : 'read-only — two fingers zoom and pan';
+}
+
+let lastTapAt = 0;
+let lastTapPoint = { x: 0, y: 0 };
+
+function applyView() {
+  clampView();
+  canvas.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
+  zoomResetBtn.textContent = view.scale > 1.01 ? `${Math.round(view.scale * 100)}%` : 'Fit';
+}
+
+// Keeps the image from being flung off screen: when it is larger than the viewport it must cover
+// it, and when it is smaller it sits centred.
+function clampView() {
+  view.scale = Math.min(Math.max(view.scale, 1), MAX_SCALE);
+  const width = canvas.offsetWidth * view.scale;
+  const height = canvas.offsetHeight * view.scale;
+  const stage = canvas.parentElement;
+
+  // Centre when the image is smaller than the viewport, otherwise keep it covering the viewport.
+  const fit = (current, offset, size, available) => {
+    if (size <= available) return (available - size) / 2 - offset;
+    return Math.min(Math.max(current, available - size - offset), -offset);
+  };
+  view.x = fit(view.x, canvas.offsetLeft, width, stage.clientWidth);
+  view.y = fit(view.y, canvas.offsetTop, height, stage.clientHeight);
+}
+
+function zoomAbout(clientX, clientY, factor) {
+  const stage = canvas.parentElement.getBoundingClientRect();
+  const px = clientX - stage.left;
+  const py = clientY - stage.top;
+  const previous = view.scale;
+  view.scale = Math.min(Math.max(view.scale * factor, 1), MAX_SCALE);
+  const ratio = view.scale / previous;
+  // Hold the point under the fingers still while everything around it grows.
+  view.x = px - (px - view.x) * ratio;
+  view.y = py - (py - view.y) * ratio;
+  applyView();
+}
+
+function resetView() {
+  view.scale = 1; view.x = 0; view.y = 0;
+  applyView();
+}
+
 // ---- touch -----------------------------------------------------------------
 
-// Handled separately from mouse rather than through pointer events, because the gestures are not
-// equivalent: one finger drags the cursor, two fingers scroll. preventDefault also stops Safari
-// from synthesizing a second round of mouse events from the same taps.
-let touchMode = null;
-let scrollAnchor = null;
+// Finger count decides intent, which is what makes the whole thing predictable: one finger acts on
+// the Mac, two move the view, three scroll. Handled with touch events rather than pointer events
+// because the count is the discriminator and preventDefault stops the browser from synthesizing a
+// duplicate round of mouse events.
+//
+// The mode is chosen when the gesture starts and held until every finger lifts. Without that,
+// releasing one finger from a pinch would momentarily look like a one-finger drag and click on
+// whatever happened to be underneath.
+const TAP_SLOP = 10;
+const PRESS_DELAY = 140;
+const LONG_PRESS = 550;
+const DOUBLE_TAP_WINDOW = 300;
 
-function twoFingerCenter(touches) {
+let gesture = null;
+
+function pinchState(touches) {
+  const dx = touches[0].clientX - touches[1].clientX;
+  const dy = touches[0].clientY - touches[1].clientY;
   return {
-    clientX: (touches[0].clientX + touches[1].clientX) / 2,
-    clientY: (touches[0].clientY + touches[1].clientY) / 2,
+    distance: Math.hypot(dx, dy) || 1,
+    x: (touches[0].clientX + touches[1].clientX) / 2,
+    y: (touches[0].clientY + touches[1].clientY) / 2,
   };
 }
 
+function centroid(touches) {
+  let x = 0, y = 0;
+  for (const touch of touches) { x += touch.clientX; y += touch.clientY; }
+  return { x: x / touches.length, y: y / touches.length };
+}
+
+function releasePress(at) {
+  if (!gesture?.pressed) return;
+  send({ type: 'mouse', action: 'up', button: 'left', ...at });
+  gesture.pressed = false;
+}
+
+function beginPress() {
+  if (!gesture || gesture.pressed || gesture.mode !== 'press') return;
+  send({ type: 'mouse', action: 'down', button: 'left', clicks: gesture.clicks, ...gesture.at });
+  gesture.pressed = true;
+}
+
 canvas.addEventListener('touchstart', (e) => {
-  if (!controlling) return;
   e.preventDefault();
-  if (e.touches.length === 1) {
-    touchMode = 'drag';
-    const at = normalized(e.touches[0]);
-    // Move first: the Mac cursor has to arrive before the press, or the click lands where the
-    // pointer happened to be sitting.
-    send({ type: 'mouse', action: 'move', ...at });
-    send({ type: 'mouse', action: 'down', button: 'left', clicks: 1, ...at });
-  } else {
-    // A second finger means the gesture was never a drag. Release so it does not become one.
-    if (touchMode === 'drag') {
-      send({ type: 'mouse', action: 'up', button: 'left', ...normalized(e.touches[0]) });
-    }
-    touchMode = 'scroll';
-    scrollAnchor = twoFingerCenter(e.touches);
+  const count = e.touches.length;
+
+  // Two or more fingers always mean the view, never the Mac. If a press was already in flight,
+  // undo it so a pinch cannot leave a button held down or drag something across the desktop.
+  if (count >= 2) {
+    if (gesture?.pressed) releasePress(normalized(e.touches[0]));
+    clearTimeout(gesture?.pressTimer);
+    clearTimeout(gesture?.longPressTimer);
+    gesture = count === 2
+      ? { mode: 'view', pinch: pinchState(e.touches) }
+      : { mode: 'scroll', anchor: centroid(e.touches) };
+    return;
   }
+
+  if (gesture) return;  // a multi-finger gesture is still winding down
+  if (!controlling) return;
+
+  const at = normalized(e.touches[0]);
+  const now = Date.now();
+  const isDoubleTap = now - lastTapAt < DOUBLE_TAP_WINDOW
+    && Math.hypot(e.touches[0].clientX - lastTapPoint.x, e.touches[0].clientY - lastTapPoint.y) < 24;
+
+  gesture = {
+    mode: 'press',
+    at,
+    startX: e.touches[0].clientX,
+    startY: e.touches[0].clientY,
+    moved: false,
+    pressed: false,
+    clicks: isDoubleTap ? 2 : 1,
+  };
+
+  // The cursor has to arrive before the button goes down, or the click lands wherever the pointer
+  // was previously sitting.
+  send({ type: 'mouse', action: 'move', ...at });
+
+  // Pressing is deferred briefly so that a pinch, whose second finger lands a moment after the
+  // first, never registers as a click.
+  gesture.pressTimer = setTimeout(beginPress, PRESS_DELAY);
+  gesture.longPressTimer = setTimeout(() => {
+    if (!gesture || gesture.moved) return;
+    clearTimeout(gesture.pressTimer);
+    releasePress(gesture.at);
+    send({ type: 'mouse', action: 'down', button: 'right', clicks: 1, ...gesture.at });
+    send({ type: 'mouse', action: 'up', button: 'right', ...gesture.at });
+    gesture.mode = 'done';
+  }, LONG_PRESS);
 }, { passive: false });
 
 canvas.addEventListener('touchmove', (e) => {
-  if (!controlling) return;
+  if (!gesture) return;
   e.preventDefault();
-  if (touchMode === 'drag' && e.touches.length === 1) {
-    pendingMove = { type: 'mouse', action: 'move', ...normalized(e.touches[0]) };
-  } else if (touchMode === 'scroll' && e.touches.length >= 2) {
-    const center = twoFingerCenter(e.touches);
-    const dx = center.clientX - scrollAnchor.clientX;
-    const dy = center.clientY - scrollAnchor.clientY;
-    // Content follows the fingers, so the wheel delta is the opposite of the movement.
-    send({ type: 'scroll', dx: -dx, dy: -dy, ...normalized(e.touches[0]) });
-    scrollAnchor = center;
+
+  if (gesture.mode === 'view' && e.touches.length >= 2) {
+    const next = pinchState(e.touches);
+    zoomAbout(next.x, next.y, next.distance / gesture.pinch.distance);
+    view.x += next.x - gesture.pinch.x;
+    view.y += next.y - gesture.pinch.y;
+    applyView();
+    gesture.pinch = next;
+    return;
   }
+
+  if (gesture.mode === 'scroll' && e.touches.length >= 2) {
+    const next = centroid(e.touches);
+    // Content follows the fingers, so the wheel delta runs opposite to the movement.
+    send({
+      type: 'scroll',
+      dx: -(next.x - gesture.anchor.x),
+      dy: -(next.y - gesture.anchor.y),
+      ...normalized(e.touches[0]),
+    });
+    gesture.anchor = next;
+    return;
+  }
+
+  if (gesture.mode !== 'press' || e.touches.length !== 1) return;
+
+  const travelled = Math.hypot(e.touches[0].clientX - gesture.startX,
+                               e.touches[0].clientY - gesture.startY);
+  if (travelled > TAP_SLOP) {
+    gesture.moved = true;
+    clearTimeout(gesture.longPressTimer);
+    // Deliberate movement is a drag, so stop waiting out the pinch grace period.
+    clearTimeout(gesture.pressTimer);
+    beginPress();
+  }
+  gesture.at = normalized(e.touches[0]);
+  if (gesture.pressed) pendingMove = { type: 'mouse', action: 'move', ...gesture.at };
 }, { passive: false });
 
 function endTouch(e) {
-  if (!controlling) return;
+  if (!gesture) return;
   e.preventDefault();
-  if (touchMode === 'drag' && e.touches.length === 0) {
-    send({ type: 'mouse', action: 'up', button: 'left', ...normalized(e.changedTouches[0]) });
+  if (e.touches.length > 0) return;  // wait for the last finger
+
+  if (gesture.mode === 'press') {
+    clearTimeout(gesture.pressTimer);
+    clearTimeout(gesture.longPressTimer);
+    const at = normalized(e.changedTouches[0]);
+
+    if (gesture.pressed) {
+      releasePress(at);
+    } else if (!gesture.moved) {
+      // Lifted before the press timer fired: a quick tap, which is still a click.
+      send({ type: 'mouse', action: 'down', button: 'left', clicks: gesture.clicks, ...at });
+      send({ type: 'mouse', action: 'up', button: 'left', ...at });
+    }
+
+    if (!gesture.moved) {
+      lastTapAt = Date.now();
+      lastTapPoint = { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
+    }
   }
-  if (e.touches.length === 0) { touchMode = null; scrollAnchor = null; }
+  gesture = null;
 }
 
 canvas.addEventListener('touchend', endTouch, { passive: false });
 canvas.addEventListener('touchcancel', endTouch, { passive: false });
+
+// ---- soft keyboard ---------------------------------------------------------
+
+// Android and iOS keyboards do not report usable key codes through keydown; most keys arrive as
+// "Unidentified". The reliable signal is beforeinput on a focused field, so typing is read from
+// there and sent as text, with editing keys mapped individually.
+const keyboardSink = document.getElementById('keyboard-sink');
+
+keyboardSink.addEventListener('beforeinput', (e) => {
+  if (!controlling) return;
+  switch (e.inputType) {
+    case 'insertText':
+      if (e.data) send({ type: 'text', text: e.data });
+      break;
+    case 'insertLineBreak':
+    case 'insertParagraph':
+      send({ type: 'key', action: 'down', code: 'Enter' });
+      send({ type: 'key', action: 'up', code: 'Enter' });
+      break;
+    case 'deleteContentBackward':
+      send({ type: 'key', action: 'down', code: 'Backspace' });
+      send({ type: 'key', action: 'up', code: 'Backspace' });
+      break;
+    default:
+      break;
+  }
+});
+
+// Never let text actually accumulate; the field exists only to summon the keyboard.
+keyboardSink.addEventListener('input', () => { keyboardSink.value = ''; });
+
+document.getElementById('keyboard').addEventListener('click', () => {
+  if (document.activeElement === keyboardSink) keyboardSink.blur();
+  else keyboardSink.focus();
+});
+
+zoomResetBtn.addEventListener('click', resetView);
+window.addEventListener('resize', applyView);
 
 window.addEventListener('keydown', (e) => {
   if (!controlling) return;
@@ -419,9 +649,7 @@ controlBtn.addEventListener('click', () => {
   controlBtn.classList.toggle('on', controlling);
   controlBtn.textContent = controlling ? 'Control enabled' : 'Enable control';
   canvas.classList.toggle('controlling', controlling);
-  hint.textContent = controlling
-    ? 'control enabled — your input is going to the Mac'
-    : 'control disabled — this view is read-only';
+  hint.textContent = describeControls();
 });
 
 document.getElementById('fullscreen').addEventListener('click', () => {
@@ -440,6 +668,8 @@ setInterval(() => {
   document.getElementById('lat').textContent = stats.latencyCount ? `${latency.toFixed(0)} ms` : '—';
   stats.frames = 0; stats.bytes = 0; stats.latencySum = 0; stats.latencyCount = 0;
 }, 1000);
+
+hint.textContent = describeControls();
 
 if (!('VideoDecoder' in window)) {
   // WebCodecs is gated on secure contexts, so a plain http:// LAN address fails here even in a
