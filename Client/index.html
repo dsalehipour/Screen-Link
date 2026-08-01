@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>screenlink</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #14181d;
+    --border: #232a32;
+    --text: #e6edf3;
+    --muted: #7d8896;
+    --accent: #3fb950;
+    --danger: #f85149;
+    --warn: #d29922;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.5 ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 10px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .brand { font-weight: 600; letter-spacing: -0.01em; }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--danger); display: inline-block; margin-right: 7px;
+    transition: background 0.2s;
+  }
+  .dot.live { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .spacer { flex: 1; }
+  .stats { display: flex; gap: 18px; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+  .stats b { color: var(--text); font-weight: 600; }
+  button {
+    background: #1f262e; color: var(--text); border: 1px solid var(--border);
+    padding: 5px 11px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 12px;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  button:hover { background: #2a323b; }
+  button.on { background: var(--accent); border-color: var(--accent); color: #04260c; font-weight: 600; }
+  button.on:hover { background: #48c65a; }
+  select {
+    background: #1f262e; color: var(--text); border: 1px solid var(--border);
+    padding: 5px 9px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 12px;
+    max-width: 260px;
+  }
+  select:hover { background: #2a323b; }
+  main {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    padding: 16px; min-height: 0; position: relative;
+  }
+  canvas {
+    max-width: 100%; max-height: 100%;
+    border-radius: 8px; border: 1px solid var(--border);
+    background: #000; display: block; cursor: default;
+    /* Gestures are forwarded to the Mac, so the browser must not claim them for pan and zoom. */
+    touch-action: none;
+  }
+  canvas.controlling { cursor: crosshair; }
+  #overlay {
+    position: absolute; inset: 16px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 14px; pointer-events: none; text-align: center;
+  }
+  #overlay.hidden { display: none; }
+  .hint {
+    position: absolute; bottom: 26px; left: 50%; transform: translateX(-50%);
+    background: rgba(20,24,29,0.92); border: 1px solid var(--border);
+    padding: 5px 12px; border-radius: 20px; color: var(--muted); font-size: 11px;
+    pointer-events: none; transition: opacity 0.3s;
+  }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand"><span class="dot" id="dot"></span>screenlink</span>
+  <select id="display" title="Which display to stream"></select>
+  <button id="control">Enable control</button>
+  <button id="fullscreen">Fullscreen</button>
+  <div class="spacer"></div>
+  <div class="stats">
+    <span>latency <b id="lat">—</b></span>
+    <span>fps <b id="fps">—</b></span>
+    <span>bitrate <b id="rate">—</b></span>
+    <span id="res">—</span>
+  </div>
+</header>
+<main>
+  <canvas id="screen"></canvas>
+  <div id="overlay">connecting…</div>
+  <div class="hint" id="hint">control disabled — this view is read-only</div>
+</main>
+
+<script>
+const TOKEN = "__TOKEN__";
+
+// Same origin as this page: the server serves HTTP and WebSocket on one port, so anything that can
+// reach the page can reach the socket, through tunnels and reverse proxies included.
+const WS_URL = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`;
+
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+const dot = document.getElementById('dot');
+const overlay = document.getElementById('overlay');
+const hint = document.getElementById('hint');
+const controlBtn = document.getElementById('control');
+
+let ws = null;
+let decoder = null;
+let controlling = false;
+let sawKeyframe = false;
+let chunkTimestamp = 0;
+
+const stats = { frames: 0, bytes: 0, latencySum: 0, latencyCount: 0 };
+
+// Overlay text and the connection dot are independent: frames arriving should clear the overlay
+// without touching connection state, and a drop should show the dot without hiding the video.
+function setOverlay(text) {
+  if (text === null) { overlay.classList.add('hidden'); return; }
+  overlay.textContent = text;
+  overlay.classList.remove('hidden');
+}
+
+function setConnected(live) {
+  dot.classList.toggle('live', live);
+}
+
+// ---- decode ----------------------------------------------------------------
+
+function initDecoder(codec) {
+  if (decoder) { try { decoder.close(); } catch (_) {} }
+  sawKeyframe = false;
+  decoder = new VideoDecoder({
+    output: (frame) => {
+      if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+        canvas.width = frame.displayWidth;
+        canvas.height = frame.displayHeight;
+      }
+      // Drawing straight from the output callback rather than waiting for rAF avoids
+      // adding a display refresh interval to the end-to-end latency.
+      ctx.drawImage(frame, 0, 0);
+      frame.close();
+      setOverlay(null);
+    },
+    error: (e) => {
+      console.error('decoder', e);
+      // Recover by asking for a fresh IDR rather than tearing the socket down.
+      sawKeyframe = false;
+      send({ type: 'keyframe' });
+    },
+  });
+  decoder.configure({
+    codec,
+    optimizeForLatency: true,
+    hardwareAcceleration: 'prefer-hardware',
+  });
+  // A fresh decoder cannot use anything before the next IDR, so ask for one rather than waiting
+  // out the keyframe interval.
+  send({ type: 'keyframe' });
+}
+
+// ---- displays ---------------------------------------------------------------
+
+let currentCodec = null;
+let currentDims = null;
+
+function applyInfo(msg) {
+  document.getElementById('res').textContent = `${msg.width}×${msg.height}`;
+  populateDisplays(msg.displays, msg.displayID);
+
+  // The server sends info twice around a display switch: once with the new resolution, then again
+  // once the new SPS reveals the real codec. Only rebuild the decoder when something actually moved.
+  const dims = `${msg.width}x${msg.height}`;
+  if (msg.codec !== currentCodec || dims !== currentDims) {
+    currentCodec = msg.codec;
+    currentDims = dims;
+    initDecoder(msg.codec);
+  }
+}
+
+function populateDisplays(list, activeID) {
+  const select = document.getElementById('display');
+  if (!list || list.length === 0) { select.style.display = 'none'; return; }
+
+  const signature = list.map((d) => `${d.id}:${d.width}x${d.height}`).join(',');
+  if (select.dataset.signature !== signature) {
+    select.textContent = '';
+    for (const d of list) {
+      const option = document.createElement('option');
+      option.value = d.id;
+      option.textContent = `${d.name} — ${d.width}×${d.height}${d.isMain ? ' (main)' : ''}`;
+      select.appendChild(option);
+    }
+    select.dataset.signature = signature;
+  }
+  select.value = String(activeID);
+  select.style.display = list.length > 1 ? '' : 'none';
+}
+
+document.getElementById('display').addEventListener('change', (e) => {
+  setOverlay('switching display…');
+  send({ type: 'display', display: Number(e.target.value) });
+});
+
+function onVideo(buffer) {
+  const view = new DataView(buffer);
+  const isKey = view.getUint8(1) === 1;
+  const captureMs = view.getFloat64(4, true);
+  const payload = new Uint8Array(buffer, 12);
+
+  stats.frames++;
+  stats.bytes += payload.byteLength;
+  // Server and browser share a wall clock here, so this is a true capture-to-decode figure.
+  stats.latencySum += Date.now() - captureMs;
+  stats.latencyCount++;
+
+  if (!decoder || decoder.state !== 'configured') return;
+  // WebCodecs rejects a delta frame as the first chunk after configure().
+  if (!sawKeyframe) {
+    if (!isKey) return;
+    sawKeyframe = true;
+  }
+  chunkTimestamp += 1000;
+  try {
+    decoder.decode(new EncodedVideoChunk({
+      type: isKey ? 'key' : 'delta',
+      timestamp: chunkTimestamp,
+      data: payload,
+    }));
+  } catch (e) {
+    console.error('decode', e);
+    sawKeyframe = false;
+  }
+}
+
+// ---- transport -------------------------------------------------------------
+
+function connect() {
+  setOverlay('connecting…');
+  setConnected(false);
+  ws = new WebSocket(WS_URL);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    send({ type: 'auth', token: TOKEN });
+    setConnected(true);
+    setOverlay('waiting for first frame…');
+  };
+  ws.onmessage = (event) => {
+    if (typeof event.data === 'string') {
+      const msg = JSON.parse(event.data);
+      if (msg.type === 'info') {
+        applyInfo(msg);
+      } else if (msg.type === 'status') {
+        setOverlay(msg.message);
+      }
+      return;
+    }
+    onVideo(event.data);
+  };
+  ws.onclose = () => {
+    setConnected(false);
+    setOverlay('disconnected — retrying…');
+    setTimeout(connect, 1000);
+  };
+  ws.onerror = () => ws.close();
+}
+
+function send(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+// ---- input -----------------------------------------------------------------
+
+// Coordinates go out normalized to [0,1] over the captured display. The canvas is letterboxed
+// and scaled by CSS, so the bounding rect is the only correct reference for the mapping.
+function normalized(event) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1),
+    y: Math.min(Math.max((event.clientY - rect.top) / rect.height, 0), 1),
+  };
+}
+
+function modifiers(event) {
+  return { meta: event.metaKey, shift: event.shiftKey, alt: event.altKey, ctrl: event.ctrlKey };
+}
+
+const BUTTONS = ['left', 'middle', 'right'];
+
+let pendingMove = null;
+function flushMove() {
+  if (pendingMove) { send(pendingMove); pendingMove = null; }
+  requestAnimationFrame(flushMove);
+}
+requestAnimationFrame(flushMove);
+
+canvas.addEventListener('mousemove', (e) => {
+  if (!controlling) return;
+  // Coalesced to one move per frame; the OS cannot consume them faster and queueing adds lag.
+  pendingMove = { type: 'mouse', action: 'move', ...normalized(e), ...modifiers(e) };
+});
+
+canvas.addEventListener('mousedown', (e) => {
+  if (!controlling) return;
+  e.preventDefault();
+  send({ type: 'mouse', action: 'down', button: BUTTONS[e.button] || 'left', ...normalized(e), ...modifiers(e) });
+});
+
+window.addEventListener('mouseup', (e) => {
+  if (!controlling) return;
+  send({ type: 'mouse', action: 'up', button: BUTTONS[e.button] || 'left', ...normalized(e), ...modifiers(e) });
+});
+
+canvas.addEventListener('contextmenu', (e) => { if (controlling) e.preventDefault(); });
+
+canvas.addEventListener('wheel', (e) => {
+  if (!controlling) return;
+  e.preventDefault();
+  send({ type: 'scroll', dx: e.deltaX, dy: e.deltaY, ...normalized(e), ...modifiers(e) });
+}, { passive: false });
+
+// ---- touch -----------------------------------------------------------------
+
+// Handled separately from mouse rather than through pointer events, because the gestures are not
+// equivalent: one finger drags the cursor, two fingers scroll. preventDefault also stops Safari
+// from synthesizing a second round of mouse events from the same taps.
+let touchMode = null;
+let scrollAnchor = null;
+
+function twoFingerCenter(touches) {
+  return {
+    clientX: (touches[0].clientX + touches[1].clientX) / 2,
+    clientY: (touches[0].clientY + touches[1].clientY) / 2,
+  };
+}
+
+canvas.addEventListener('touchstart', (e) => {
+  if (!controlling) return;
+  e.preventDefault();
+  if (e.touches.length === 1) {
+    touchMode = 'drag';
+    const at = normalized(e.touches[0]);
+    // Move first: the Mac cursor has to arrive before the press, or the click lands where the
+    // pointer happened to be sitting.
+    send({ type: 'mouse', action: 'move', ...at });
+    send({ type: 'mouse', action: 'down', button: 'left', clicks: 1, ...at });
+  } else {
+    // A second finger means the gesture was never a drag. Release so it does not become one.
+    if (touchMode === 'drag') {
+      send({ type: 'mouse', action: 'up', button: 'left', ...normalized(e.touches[0]) });
+    }
+    touchMode = 'scroll';
+    scrollAnchor = twoFingerCenter(e.touches);
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', (e) => {
+  if (!controlling) return;
+  e.preventDefault();
+  if (touchMode === 'drag' && e.touches.length === 1) {
+    pendingMove = { type: 'mouse', action: 'move', ...normalized(e.touches[0]) };
+  } else if (touchMode === 'scroll' && e.touches.length >= 2) {
+    const center = twoFingerCenter(e.touches);
+    const dx = center.clientX - scrollAnchor.clientX;
+    const dy = center.clientY - scrollAnchor.clientY;
+    // Content follows the fingers, so the wheel delta is the opposite of the movement.
+    send({ type: 'scroll', dx: -dx, dy: -dy, ...normalized(e.touches[0]) });
+    scrollAnchor = center;
+  }
+}, { passive: false });
+
+function endTouch(e) {
+  if (!controlling) return;
+  e.preventDefault();
+  if (touchMode === 'drag' && e.touches.length === 0) {
+    send({ type: 'mouse', action: 'up', button: 'left', ...normalized(e.changedTouches[0]) });
+  }
+  if (e.touches.length === 0) { touchMode = null; scrollAnchor = null; }
+}
+
+canvas.addEventListener('touchend', endTouch, { passive: false });
+canvas.addEventListener('touchcancel', endTouch, { passive: false });
+
+window.addEventListener('keydown', (e) => {
+  if (!controlling) return;
+  e.preventDefault();
+  const printable = e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey;
+  if (printable) {
+    // Unicode injection handles any character and any layout without a reverse keycode lookup.
+    send({ type: 'text', text: e.key });
+  } else {
+    send({ type: 'key', action: 'down', code: e.code, ...modifiers(e) });
+  }
+});
+
+window.addEventListener('keyup', (e) => {
+  if (!controlling) return;
+  e.preventDefault();
+  const printable = e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey;
+  if (!printable) send({ type: 'key', action: 'up', code: e.code, ...modifiers(e) });
+});
+
+controlBtn.addEventListener('click', () => {
+  controlling = !controlling;
+  controlBtn.classList.toggle('on', controlling);
+  controlBtn.textContent = controlling ? 'Control enabled' : 'Enable control';
+  canvas.classList.toggle('controlling', controlling);
+  hint.textContent = controlling
+    ? 'control enabled — your input is going to the Mac'
+    : 'control disabled — this view is read-only';
+});
+
+document.getElementById('fullscreen').addEventListener('click', () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen();
+});
+
+// ---- stats -----------------------------------------------------------------
+
+setInterval(() => {
+  const fps = stats.frames;
+  const mbps = (stats.bytes * 8) / 1e6;
+  const latency = stats.latencyCount ? stats.latencySum / stats.latencyCount : 0;
+  document.getElementById('fps').textContent = fps ? `${fps}` : '—';
+  document.getElementById('rate').textContent = fps ? `${mbps.toFixed(1)} Mb/s` : '—';
+  document.getElementById('lat').textContent = stats.latencyCount ? `${latency.toFixed(0)} ms` : '—';
+  stats.frames = 0; stats.bytes = 0; stats.latencySum = 0; stats.latencyCount = 0;
+}, 1000);
+
+if (!('VideoDecoder' in window)) {
+  // WebCodecs is gated on secure contexts, so a plain http:// LAN address fails here even in a
+  // browser that fully supports it. Distinguish the two, or the message sends people hunting for
+  // the wrong problem.
+  setOverlay(window.isSecureContext
+    ? 'this browser has no WebCodecs support — use Chrome, Edge, or Safari 16.4+'
+    : 'WebCodecs requires a secure context — reach this page over HTTPS, not a plain http:// address');
+} else {
+  connect();
+}
+</script>
+</body>
+</html>

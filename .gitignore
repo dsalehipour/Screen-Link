@@ -1,0 +1,12 @@
+.build/
+build/
+.DS_Store
+*.xcodeproj
+.swiftpm/
+
+# Generated at runtime, never source. Listed explicitly so a stray copy inside the working tree
+# cannot be committed by accident.
+*.pem
+*.p12
+*.key
+token
