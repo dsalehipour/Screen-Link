@@ -39,6 +39,10 @@
     background: var(--panel);
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
+    /* Above the canvas whatever the zoom. Without this the scaled canvas paints over the bar and
+       there is no way to turn control back off once it is on. */
+    position: relative;
+    z-index: 2;
   }
   .brand { font-weight: 600; letter-spacing: -0.01em; }
   .dot {
@@ -67,6 +71,8 @@
   main {
     flex: 1; display: flex; align-items: center; justify-content: center;
     padding: 16px; min-height: 0; position: relative;
+    /* Clips the zoomed canvas to the viewing area instead of letting it spill over the bar. */
+    overflow: hidden;
   }
   canvas {
     max-width: 100%; max-height: 100%;
@@ -88,8 +94,12 @@
   @media (pointer: coarse) {
     .touch-only { display: inline-block; }
     .stats { display: none; }
-    header { gap: 8px; padding: 8px 10px; }
-    select { max-width: 120px; }
+    /* Wrapping rather than overflowing: a control pushed off the edge of a phone cannot be
+       reached at all, and one of them is how control gets turned back off. */
+    header { gap: 6px; padding: 7px 10px; flex-wrap: wrap; }
+    .spacer { display: none; }
+    .brand-name { display: none; }
+    select, button { max-width: 33vw; padding: 6px 9px; }
   }
   #overlay {
     position: absolute; inset: 16px;
@@ -99,18 +109,22 @@
     white-space: pre-line;
   }
   #overlay.hidden { display: none; }
-  .hint {
-    position: absolute; bottom: 26px; left: 50%; transform: translateX(-50%);
-    background: rgba(20,24,29,0.92); border: 1px solid var(--border);
-    padding: 5px 12px; border-radius: 20px; color: var(--muted); font-size: 11px;
-    pointer-events: none; transition: opacity 0.3s;
+  /* Transient confirmation for gestures that change a mode, which otherwise give no sign of having
+     registered. Above the canvas, so zoom cannot bury it. */
+  #toast {
+    position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%);
+    background: rgba(20,24,29,0.94); border: 1px solid var(--border);
+    padding: 6px 14px; border-radius: 20px; color: var(--text); font-size: 12px;
+    pointer-events: none; opacity: 0; transition: opacity 0.25s; z-index: 3;
   }
+  #toast.show { opacity: 1; }
 </style>
 </head>
 <body>
 <header>
-  <span class="brand"><span class="dot" id="dot"></span>screenlink</span>
+  <span class="brand"><span class="dot" id="dot"></span><span class="brand-name">screenlink</span></span>
   <select id="display" title="Which display to stream"></select>
+  <select id="quality" title="Stream resolution"></select>
   <button id="control">Enable control</button>
   <button id="keyboard" class="touch-only">Keyboard</button>
   <button id="zoomreset" class="touch-only">Fit</button>
@@ -127,7 +141,7 @@
   <canvas id="screen"></canvas>
   <input id="keyboard-sink" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
   <div id="overlay">connecting…</div>
-  <div class="hint" id="hint"></div>
+  <div id="toast"></div>
 </main>
 
 <script>
@@ -182,8 +196,16 @@ const canvas = document.getElementById('screen');
 const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
 const dot = document.getElementById('dot');
 const overlay = document.getElementById('overlay');
-const hint = document.getElementById('hint');
+const toast = document.getElementById('toast');
 const controlBtn = document.getElementById('control');
+
+let toastTimer = null;
+function flash(text) {
+  toast.textContent = text;
+  toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 1400);
+}
 
 let ws = null;
 let decoder = null;
@@ -245,10 +267,20 @@ function initDecoder(codec) {
 
 let currentCodec = null;
 let currentDims = null;
+let currentDisplayID = null;
+let currentMaxWidth = 0;
+
+// A phone has room for the name of a thing or its dimensions, not both. Spelling everything out
+// wraps the bar onto a third row, which costs more screen than the detail is worth.
+const compact = matchMedia('(pointer: coarse)').matches;
 
 function applyInfo(msg) {
   document.getElementById('res').textContent = `${msg.width}×${msg.height}`;
   populateDisplays(msg.displays, msg.displayID);
+  populateQuality(msg.displays.find((d) => d.id === msg.displayID), msg.maxWidth);
+  settled(msg);
+  currentDisplayID = msg.displayID;
+  currentMaxWidth = msg.maxWidth ?? 0;
 
   // The server sends info twice around a display switch: once with the new resolution, then again
   // once the new SPS reveals the real codec. Only rebuild the decoder when something actually moved.
@@ -270,7 +302,9 @@ function populateDisplays(list, activeID) {
     for (const d of list) {
       const option = document.createElement('option');
       option.value = d.id;
-      option.textContent = `${d.name} — ${d.width}×${d.height}${d.isMain ? ' (main)' : ''}`;
+      option.textContent = compact
+        ? d.name
+        : `${d.name} — ${d.width}×${d.height}${d.isMain ? ' (main)' : ''}`;
       select.appendChild(option);
     }
     select.dataset.signature = signature;
@@ -279,9 +313,87 @@ function populateDisplays(list, activeID) {
   select.style.display = list.length > 1 ? '' : 'none';
 }
 
+// ---- resolution -------------------------------------------------------------
+
+// Fewer pixels means less to encode, send and decode, so the default is well under what the panel
+// can do. That is the right trade for pointing and clicking and the wrong one for reading, hence
+// the choice. The step above the panel's own width is pointless, so the list stops there.
+const QUALITY_STEPS = [
+  { width: 1280, label: 'Fast' },
+  { width: 1920, label: 'Balanced' },
+  { width: 2560, label: 'Sharp' },
+  { width: 0, label: 'Full resolution' },
+];
+
+function populateQuality(display, activeWidth) {
+  const select = document.getElementById('quality');
+  if (!display) { select.style.display = 'none'; return; }
+
+  const native = display.nativeWidth;
+  const steps = QUALITY_STEPS.filter((s) => s.width === 0 || s.width < native);
+  const signature = `${native}:${steps.map((s) => s.width).join(',')}`;
+  if (select.dataset.signature !== signature) {
+    select.textContent = '';
+    for (const step of steps) {
+      const option = document.createElement('option');
+      option.value = String(step.width);
+      const px = step.width === 0 ? native : step.width;
+      option.textContent = compact ? step.label : `${step.label} — ${px}px`;
+      select.appendChild(option);
+    }
+    select.dataset.signature = signature;
+  }
+  // A width the server reports but this list does not offer still has to show as selected.
+  const wanted = String(activeWidth ?? 0);
+  select.value = [...select.options].some((o) => o.value === wanted) ? wanted : '0';
+  select.style.display = steps.length > 1 ? '' : 'none';
+}
+
+// ---- change confirmation ----------------------------------------------------
+
+// A request the Mac ignores used to look exactly like one it honoured: the picker moved and the
+// picture did not. Every change now states what it expects back and says so if that never lands.
+let awaiting = null;
+
+function expect(description, matches, revert) {
+  clearTimeout(awaiting?.timer);
+  awaiting = {
+    matches,
+    revert,
+    timer: setTimeout(() => {
+      const pending = awaiting;
+      awaiting = null;
+      setOverlay(null);
+      pending?.revert();
+      flash(`${description} did not take effect`);
+    }, 5000),
+  };
+}
+
+function settled(info) {
+  if (!awaiting || !awaiting.matches(info)) return;
+  clearTimeout(awaiting.timer);
+  awaiting = null;
+}
+
 document.getElementById('display').addEventListener('change', (e) => {
+  const wanted = Number(e.target.value);
+  const previous = currentDisplayID;
   setOverlay('switching display…');
-  send({ type: 'display', display: Number(e.target.value) });
+  send({ type: 'display', display: wanted });
+  expect('display switch',
+    (info) => info.displayID === wanted,
+    () => { document.getElementById('display').value = String(previous); });
+});
+
+document.getElementById('quality').addEventListener('change', (e) => {
+  const wanted = Number(e.target.value);
+  const previous = currentMaxWidth;
+  setOverlay('changing resolution…');
+  send({ type: 'quality', maxWidth: wanted });
+  expect('resolution change',
+    (info) => (info.maxWidth ?? 0) === wanted,
+    () => { document.getElementById('quality').value = String(previous); });
 });
 
 function onVideo(buffer) {
@@ -443,18 +555,29 @@ canvas.addEventListener('wheel', (e) => {
 const view = { scale: 1, x: 0, y: 0 };
 const MAX_SCALE = 8;
 const zoomResetBtn = document.getElementById('zoomreset');
-const isTouch = matchMedia('(pointer: coarse)').matches;
 
-// Gestures are only discoverable if something says what they are.
-function describeControls() {
-  if (!isTouch) {
-    return controlling
-      ? 'control enabled — your input is going to the Mac'
-      : 'control disabled — this view is read-only';
-  }
-  return controlling
-    ? 'tap to click · hold for right-click · two fingers zoom and pan · three fingers scroll'
-    : 'read-only — drag to move, pinch to zoom';
+function setControlling(enabled) {
+  controlling = enabled;
+  controlBtn.classList.toggle('on', controlling);
+  controlBtn.textContent = controlling ? 'Control enabled' : 'Enable control';
+  canvas.classList.toggle('controlling', controlling);
+}
+
+// Three quick taps turn control on, so it can be reached without aiming at the bar. Only while
+// read-only: once control is on, taps are clicks, and holding every one back long enough to rule
+// out a third would put a visible delay on the thing that most needs to feel immediate. Turning it
+// off is the button, which is why the bar sits above the picture at any zoom.
+const TRIPLE_TAP_WINDOW = 500;
+let recentTaps = [];
+
+function countReadOnlyTap() {
+  const now = Date.now();
+  recentTaps = recentTaps.filter((t) => now - t < TRIPLE_TAP_WINDOW);
+  recentTaps.push(now);
+  if (recentTaps.length < 3) return;
+  recentTaps = [];
+  setControlling(true);
+  flash('control enabled');
 }
 
 let lastTapAt = 0;
@@ -562,8 +685,17 @@ function releasePress(at) {
   gesture.pressed = false;
 }
 
+/**
+ * Moves the pointer and presses, in that order.
+ *
+ * Nothing is sent to the Mac while a gesture might still turn out to be a pinch. Moving the cursor
+ * on touchstart defeated the whole point of the delay: the pointer jumped the instant a finger
+ * landed, so a two-finger gesture dragged the cursor across the desktop before the second finger
+ * was even seen.
+ */
 function beginPress() {
   if (!gesture || gesture.pressed || gesture.mode !== 'press') return;
+  send({ type: 'mouse', action: 'move', ...gesture.at });
   send({ type: 'mouse', action: 'down', button: 'left', clicks: gesture.clicks, ...gesture.at });
   gesture.pressed = true;
 }
@@ -578,9 +710,10 @@ canvas.addEventListener('touchstart', (e) => {
     if (gesture?.pressed) releasePress(normalized(e.touches[0]));
     clearTimeout(gesture?.pressTimer);
     clearTimeout(gesture?.longPressTimer);
+    const start = count === 2 ? pinchState(e.touches) : centroid(e.touches);
     gesture = count === 2
-      ? { mode: 'view', pinch: pinchState(e.touches), anchor: pinchState(e.touches) }
-      : { mode: 'scroll', anchor: centroid(e.touches) };
+      ? { mode: 'view', pinch: start, anchor: start, startX: start.x, startY: start.y, moved: true }
+      : { mode: 'scroll', anchor: start };
     return;
   }
 
@@ -589,7 +722,8 @@ canvas.addEventListener('touchstart', (e) => {
   // With control off there is nothing for a single finger to send, so it moves the view instead.
   // Demanding two fingers to pan in a read-only view makes the image feel stuck to the screen.
   if (!controlling) {
-    gesture = { mode: 'view', pinch: null, anchor: centroid(e.touches) };
+    const start = centroid(e.touches);
+    gesture = { mode: 'view', pinch: null, anchor: start, startX: start.x, startY: start.y, moved: false };
     return;
   }
 
@@ -608,17 +742,14 @@ canvas.addEventListener('touchstart', (e) => {
     clicks: isDoubleTap ? 2 : 1,
   };
 
-  // The cursor has to arrive before the button goes down, or the click lands wherever the pointer
-  // was previously sitting.
-  send({ type: 'mouse', action: 'move', ...at });
-
-  // Pressing is deferred briefly so that a pinch, whose second finger lands a moment after the
-  // first, never registers as a click.
+  // Everything is deferred so that a pinch, whose second finger lands a moment after the first,
+  // never reaches the Mac at all.
   gesture.pressTimer = setTimeout(beginPress, PRESS_DELAY);
   gesture.longPressTimer = setTimeout(() => {
     if (!gesture || gesture.moved) return;
     clearTimeout(gesture.pressTimer);
     releasePress(gesture.at);
+    send({ type: 'mouse', action: 'move', ...gesture.at });
     send({ type: 'mouse', action: 'down', button: 'right', clicks: 1, ...gesture.at });
     send({ type: 'mouse', action: 'up', button: 'right', ...gesture.at });
     gesture.mode = 'done';
@@ -637,6 +768,7 @@ canvas.addEventListener('touchmove', (e) => {
     if (multi && gesture.pinch) {
       zoomAbout(next.x, next.y, next.distance / gesture.pinch.distance);
     }
+    if (Math.hypot(next.x - gesture.startX, next.y - gesture.startY) > TAP_SLOP) gesture.moved = true;
     view.x += next.x - gesture.anchor.x;
     view.y += next.y - gesture.anchor.y;
     applyView();
@@ -696,6 +828,7 @@ function endTouch(e) {
       releasePress(at);
     } else if (!gesture.moved) {
       // Lifted before the press timer fired: a quick tap, which is still a click.
+      send({ type: 'mouse', action: 'move', ...at });
       send({ type: 'mouse', action: 'down', button: 'left', clicks: gesture.clicks, ...at });
       send({ type: 'mouse', action: 'up', button: 'left', ...at });
     }
@@ -704,6 +837,8 @@ function endTouch(e) {
       lastTapAt = Date.now();
       lastTapPoint = { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
     }
+  } else if (gesture.mode === 'view' && !gesture.moved) {
+    countReadOnlyTap();
   }
   gesture = null;
 }
@@ -768,13 +903,7 @@ window.addEventListener('keyup', (e) => {
   if (!printable) send({ type: 'key', action: 'up', code: e.code, ...modifiers(e) });
 });
 
-controlBtn.addEventListener('click', () => {
-  controlling = !controlling;
-  controlBtn.classList.toggle('on', controlling);
-  controlBtn.textContent = controlling ? 'Control enabled' : 'Enable control';
-  canvas.classList.toggle('controlling', controlling);
-  hint.textContent = describeControls();
-});
+controlBtn.addEventListener('click', () => setControlling(!controlling));
 
 document.getElementById('fullscreen').addEventListener('click', () => {
   if (document.fullscreenElement) document.exitFullscreen();
@@ -792,8 +921,6 @@ setInterval(() => {
   document.getElementById('lat').textContent = stats.latencyCount ? `${latency.toFixed(0)} ms` : '—';
   stats.frames = 0; stats.bytes = 0; stats.latencySum = 0; stats.latencyCount = 0;
 }, 1000);
-
-hint.textContent = describeControls();
 
 if (!('VideoDecoder' in window)) {
   // WebCodecs is gated on secure contexts, so a plain http:// LAN address fails here even in a

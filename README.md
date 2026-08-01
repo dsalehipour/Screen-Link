@@ -41,16 +41,53 @@ node scripts/smoke.mjs   # end-to-end protocol check
 scripts/stop.sh
 ```
 
+## Using it from a phone
+
+The view starts read-only, so nothing you do reaches the Mac until you say so.
+
+| Gesture | Read-only | Controlling |
+| --- | --- | --- |
+| One finger drag | pans the view | drags on the Mac |
+| One finger tap | — | clicks |
+| Three quick taps | turns control on | — |
+| Two fingers | pinch to zoom, drag to pan | pinch to zoom, drag to pan |
+| Three fingers | — | scrolls the remote content |
+| Press and hold | — | right-click |
+| Double tap | — | double-click |
+
+Turning control back off is the button in the bar, which stays above the picture at any zoom.
+Triple tap only turns control on: once it is on, every tap is a click, and holding each one back
+long enough to rule out a third would put a visible delay on the thing that most needs to feel
+immediate.
+
+Nothing is sent to the Mac until a gesture can no longer turn out to be a pinch, so resting two
+fingers on the glass does not twitch the cursor.
+
+### Resolution
+
+The stream is downscaled to 1920 px wide by default. The picker in the bar goes from 1280 up to the
+panel's own pixel count — full resolution on a 3440×1440 display really is 3440×1440, and on a
+Retina panel it is the pixel count, not the point count. Bitrate scales with the picture, so the
+higher settings stay watchable rather than dissolving whenever something moves.
+
 ## Measured
 
-On an M-series Mac capturing a 3440×1440 display downscaled to 1920×804:
+On an M-series Mac capturing a 3440×1440 display, over a Cloudflare tunnel, five-second samples:
 
-- **8.4 ms** average capture-to-client, 9.7 ms p95, 5.5 ms best case
-- **55–57 fps** sustained against a 60 fps target
-- 0.2–1.8 Mb/s on typical desktop content, since unchanged frames are never encoded
+| Stream width | fps | capture-to-decode |
+| --- | --- | --- |
+| 1280 | 56 | 16 ms |
+| 1920 (default) | 56 | 17 ms |
+| 2560 | 56 | 17 ms |
+| 3440 (full) | 56 | 21 ms |
 
-Those figures cover capture, hardware encode, and loopback transport. Browser decode and
-compositing add roughly 10–25 ms on top, so glass-to-glass lands in the 25–40 ms range.
+Full resolution costs about 5 ms and roughly five times the bits. On loopback the same run lands at
+4–9 ms. Bandwidth was 0.2–1.0 Mb/s here because unchanged frames are never encoded; sustained
+full-screen motion at full resolution will want considerably more, which is the setting to turn
+down on a weak connection.
+
+Those figures cover capture, hardware encode, and transport. Browser decode and compositing add
+roughly 10–25 ms on top.
 
 ## Troubleshooting
 
@@ -147,7 +184,13 @@ client's model.
 {"type":"key",    "action":"down|up", "code":"KeyA", "meta":true}
 {"type":"text",   "text":"hello"}
 {"type":"keyframe"}
+{"type":"display", "display": 4}
+{"type":"quality", "maxWidth": 2560}   // 0 means the panel's own resolution
 ```
+
+`display` and `quality` change the view rather than driving the Mac, so both stay available when
+input injection is off. Each is answered with a fresh `info`; a client that never sees one matching
+what it asked for knows the request did not land.
 
 Printable characters go through `text`, which injects Unicode directly and therefore works for any
 character and any keyboard layout without a reverse keycode lookup. Everything else goes through
@@ -158,8 +201,9 @@ character and any keyboard layout without a reverse keycode lookup. Everything e
 ```
 --port N          default 8766 (HTTP and WebSocket share it)
 --fps N           default 60
---max-width N     default 1920 (capture is downscaled to fit)
---bitrate N       default 12000000
+--max-width N     default 1920; 0 captures the panel's own pixels. Changeable at runtime
+                  from the viewer, so this only sets the starting point
+--bitrate N       default 12000000 at 1920×1080, scaled by pixel count from there
 --no-input        serve video but ignore all input commands
 --token S         shared secret
 --host H          interface to bind; defaults to 127.0.0.1
@@ -231,3 +275,18 @@ Sources/screenlink/
   HTTPServer.swift      minimal HTTP/1.1 over Network.framework
 Client/index.html       WebCodecs viewer
 ```
+
+Checks. The browser ones drive a real Chromium over the DevTools protocol, because the IDE's
+embedded browser cannot render a certificate interstitial and emulated touch is the only honest way
+to test a gesture. Launch one with `--remote-debugging-port=9222` first.
+
+```bash
+node scripts/smoke.mjs                          # protocol, input mapping, display switching
+node scripts/pairing-check.mjs ws://127.0.0.1:8766 "$(cat build/token)"
+node scripts/gesture-check.mjs http://127.0.0.1:8766/ "$(cat build/token)"
+node scripts/touch-check.mjs "http://127.0.0.1:8766/#t=$(cat build/token)"
+node scripts/display-check.mjs http://127.0.0.1:8766/ "$(cat build/token)"
+```
+
+`gesture-check` and `smoke` drive the Mac for real — they move the pointer and press buttons. Run
+them when the desktop underneath can tolerate a stray click.

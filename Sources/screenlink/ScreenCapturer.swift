@@ -14,6 +14,9 @@ struct DisplayInfo: Encodable {
     let name: String
     let width: Int
     let height: Int
+    /// Pixels rather than points, so a client can tell how far "full resolution" actually goes.
+    let nativeWidth: Int
+    let nativeHeight: Int
     let x: Int
     let y: Int
     let isMain: Bool
@@ -54,12 +57,15 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         let names = await displayNames()
         return content.displays.enumerated().map { index, display in
-            DisplayInfo(
+            let native = nativeSize(of: display)
+            return DisplayInfo(
                 index: index,
                 id: display.displayID,
                 name: names[display.displayID] ?? "Display \(display.displayID)",
                 width: display.width,
                 height: display.height,
+                nativeWidth: native.width,
+                nativeHeight: native.height,
                 x: Int(display.frame.origin.x),
                 y: Int(display.frame.origin.y),
                 isMain: CGDisplayIsMain(display.displayID) != 0)
@@ -121,6 +127,22 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         Log.info("switched to display \(display.displayID) at \(w)x\(h)")
     }
 
+    /// Rescales the live stream. Like a display switch, the caller restarts the encoder afterwards.
+    func setMaxWidth(_ value: Int) async throws {
+        guard let stream else { throw CaptureError.notRunning }
+        maxWidth = value
+        let display = try await resolve(displayID)
+        let (cfg, w, h) = makeConfiguration(for: display)
+
+        try await stream.updateConfiguration(cfg)
+
+        width = w
+        height = h
+        configuration = cfg
+
+        Log.info("stream rescaled to \(w)x\(h)")
+    }
+
     func stop() async {
         guard let s = stream else { return }
         stream = nil
@@ -150,10 +172,23 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         return match
     }
 
+    /// The panel's real pixel count, which is what "full resolution" has to mean.
+    ///
+    /// `SCDisplay` reports points. On a Retina panel that is half the pixels the display actually
+    /// has, so capturing at `display.width` throws away detail before the encoder ever sees it.
+    static func nativeSize(of display: SCDisplay) -> (width: Int, height: Int) {
+        guard let mode = CGDisplayCopyDisplayMode(display.displayID) else {
+            return (display.width, display.height)
+        }
+        return (max(display.width, mode.pixelWidth), max(display.height, mode.pixelHeight))
+    }
+
     private func makeConfiguration(for display: SCDisplay) -> (SCStreamConfiguration, Int, Int) {
-        var w = display.width
-        var h = display.height
-        if w > maxWidth {
+        let native = ScreenCapturer.nativeSize(of: display)
+        var w = native.width
+        var h = native.height
+        // A maxWidth of zero means "as many pixels as the panel has".
+        if maxWidth > 0 && w > maxWidth {
             h = Int((Double(h) * Double(maxWidth) / Double(w)).rounded())
             w = maxWidth
         }

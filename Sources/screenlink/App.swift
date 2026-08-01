@@ -25,6 +25,12 @@ final class Application: ScreenCapturerDelegate {
     private var _captureReady = false
     private let switchLock = NSLock()
     private var switching = false
+    private var _maxWidth = 0
+    // The most recent frame, kept so a still screen can still be shown to someone who just arrived.
+    private let frameLock = NSLock()
+    private var lastPixelBuffer: CVPixelBuffer?
+    private var lastPixelBufferAt: CMTime = .zero
+    private var nudgeCount: Int64 = 0
     private(set) var certificateFingerprint: String?
 
     /// The address to hand to another device, as opposed to the loopback one used locally.
@@ -53,6 +59,11 @@ final class Application: ScreenCapturerDelegate {
     private var captureReady: Bool {
         get { stateLock.lock(); defer { stateLock.unlock() }; return _captureReady }
         set { stateLock.lock(); _captureReady = newValue; stateLock.unlock() }
+    }
+
+    private var maxWidth: Int {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _maxWidth }
+        set { stateLock.lock(); _maxWidth = newValue; stateLock.unlock() }
     }
 
     let devices: DeviceStore
@@ -92,7 +103,7 @@ final class Application: ScreenCapturerDelegate {
                 ? "capture running"
                 : "screen recording permission not granted — approve screenlink in System Settings > Privacy & Security > Screen & System Audio Recording, then rerun scripts/run.sh"
         }
-        server.onClientReady = { [weak self] in self?.encoder.requestKeyframe() }
+        server.onClientReady = { [weak self] in self?.nudge() }
         server.onPairingRequest = { [weak self] request in self?.onPairingRequest?(request) }
         server.onPairingWithdrawn = { [weak self] requestId in self?.onPairingWithdrawn?(requestId) }
         server.onCommand = { [weak self] command in
@@ -101,6 +112,11 @@ final class Application: ScreenCapturerDelegate {
             // even when input injection is disabled.
             if command.type == .display {
                 Task { await self.switchDisplay(to: command.display) }
+                return
+            }
+            if command.type == .quality {
+                guard let requested = command.maxWidth else { return }
+                Task { await self.setMaxWidth(requested) }
                 return
             }
             guard self.config.allowInput else { return }
@@ -182,6 +198,7 @@ final class Application: ScreenCapturerDelegate {
             do {
                 try await capturer.start(displayID: config.displayID,
                                          maxWidth: config.maxWidth, fps: config.fps)
+                maxWidth = config.maxWidth
                 capturer.delegate = self
                 injector = InputInjector(displayID: capturer.displayID)
                 displays = (try? await ScreenCapturer.availableDisplays()) ?? []
@@ -191,7 +208,8 @@ final class Application: ScreenCapturerDelegate {
                 }
 
                 try encoder.start(width: capturer.width, height: capturer.height,
-                                  fps: config.fps, bitrate: config.bitrate)
+                                  fps: config.fps,
+                                  bitrate: bitrate(for: capturer.width, capturer.height))
                 encoder.onCodecString = { [weak self] value in
                     guard let self else { return }
                     self.codec = value
@@ -228,7 +246,17 @@ final class Application: ScreenCapturerDelegate {
         guard captureReady else { return nil }
         return StreamInfo(width: capturer.width, height: capturer.height,
                           fps: config.fps, codec: codec,
-                          displayID: capturer.displayID, displays: displays)
+                          displayID: capturer.displayID, displays: displays,
+                          maxWidth: maxWidth, bitrate: bitrate(for: capturer.width, capturer.height))
+    }
+
+    /// Bitrate follows pixel count, because a fixed budget that looks clean at 1920 wide turns a
+    /// full-resolution stream to mush the moment anything on screen moves. The floor keeps small
+    /// pictures from being starved; the ceiling keeps a 5K panel from saturating the link.
+    private func bitrate(for width: Int, _ height: Int) -> Int {
+        let scale = Double(width * height) / Double(1920 * 1080)
+        let scaled = Int((Double(config.bitrate) * scale).rounded())
+        return min(max(scaled, config.bitrate / 2), config.bitrate * 4)
     }
 
     private func broadcastInfo() {
@@ -267,15 +295,55 @@ final class Application: ScreenCapturerDelegate {
             // The encoder is torn down first so no frame at the new resolution is ever handed to a
             // session configured for the old one. Frames arriving mid-switch are simply dropped.
             encoder.stop()
+            discardLastFrame()
             try await capturer.switchTo(displayID: id)
             try encoder.start(width: capturer.width, height: capturer.height,
-                              fps: config.fps, bitrate: config.bitrate)
+                              fps: config.fps, bitrate: bitrate(for: capturer.width, capturer.height))
             injector?.displayID = capturer.displayID
             // Sent immediately so clients learn the new resolution before frames at that size
             // start arriving. The codec string follows separately once the new SPS exists.
             broadcastInfo()
+            // A display showing nothing in motion produces no frames, which would leave viewers
+            // looking at the display they just switched away from.
+            try? await Task.sleep(for: .milliseconds(400))
+            nudge()
         } catch {
             Log.error("display switch failed: \(error)")
+        }
+    }
+
+    /// Changes how much of the panel's detail is actually sent.
+    ///
+    /// The default trades pixels for latency, which is the right call over a phone link, but it is
+    /// the wrong call when the point is to read something. Zero means the panel's own resolution.
+    func setMaxWidth(_ requested: Int) async {
+        guard captureReady else { return }
+        let value = requested <= 0 ? 0 : max(320, requested)
+        guard value != maxWidth else {
+            broadcastInfo()
+            return
+        }
+
+        guard beginSwitch() else { return }
+        defer { endSwitch() }
+
+        do {
+            encoder.stop()
+            discardLastFrame()
+            try await capturer.setMaxWidth(value)
+            try encoder.start(width: capturer.width, height: capturer.height,
+                              fps: config.fps, bitrate: bitrate(for: capturer.width, capturer.height))
+            maxWidth = value
+            broadcastInfo()
+            try? await Task.sleep(for: .milliseconds(400))
+            nudge()
+        } catch {
+            Log.error("resolution change failed: \(error)")
+            // Put the encoder back at whatever the capturer actually settled on, or the stream is
+            // left dead rather than merely at the wrong size.
+            try? encoder.start(width: capturer.width, height: capturer.height,
+                               fps: config.fps, bitrate: bitrate(for: capturer.width, capturer.height))
+            broadcastInfo()
         }
     }
 
@@ -313,10 +381,44 @@ final class Application: ScreenCapturerDelegate {
         statsLock.lock()
         framesCaptured += 1
         statsLock.unlock()
+
+        frameLock.lock()
+        lastPixelBuffer = pixelBuffer
+        lastPixelBufferAt = pts
+        frameLock.unlock()
+
         // Skip the encode entirely when nobody is watching; the capture stream stays warm so a
         // reconnecting client gets frames immediately instead of paying stream startup again.
         guard server.clientCount > 0 else { return }
         encoder.encode(pixelBuffer, pts: pts, captureEpochMs: epochMillis())
+    }
+
+    /// Encodes the screen as it stands, without waiting for it to change.
+    ///
+    /// ScreenCaptureKit only delivers a frame when something moves, which is what keeps an idle
+    /// desktop from costing anything. The cost is that a client arriving at a still screen has
+    /// nothing to decode and sits on a blank canvas — or worse, on the last picture of a display it
+    /// is no longer watching. Re-sending the frame already in hand covers both.
+    /// Drops the retained frame when it no longer matches the encoder's geometry.
+    private func discardLastFrame() {
+        frameLock.lock()
+        lastPixelBuffer = nil
+        frameLock.unlock()
+    }
+
+    private func nudge() {
+        encoder.requestKeyframe()
+
+        frameLock.lock()
+        let buffer = lastPixelBuffer
+        let pts = lastPixelBufferAt
+        frameLock.unlock()
+
+        guard let buffer, server.clientCount > 0 else { return }
+        // Presentation timestamps have to keep climbing or the encoder rejects the frame.
+        nudgeCount += 1
+        let stamp = CMTimeAdd(pts, CMTime(value: CMTimeValue(nudgeCount), timescale: 600))
+        encoder.encode(buffer, pts: stamp, captureEpochMs: epochMillis())
     }
 
     // MARK: - HTTP routes

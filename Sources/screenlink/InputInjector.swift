@@ -45,7 +45,7 @@ final class InputInjector {
         case .text:
             guard let text = command.text else { return }
             type(text)
-        case .auth, .keyframe, .display:
+        case .auth, .keyframe, .display, .quality:
             break
         }
     }

@@ -94,6 +94,10 @@ export class Session {
 
   /** Navigates, clicking through the self-signed certificate warning if one appears. */
   async open(url) {
+    // Navigating to the address already showing, differing only in the fragment, is a no-op in the
+    // browser. A run would then silently test the previously loaded page.
+    await this.send('Page.navigate', { url: 'about:blank' });
+    await sleep(200);
     await this.send('Page.navigate', { url });
     await sleep(2500);
     if (String(await this.evaluate('location.href')).startsWith('chrome-error')) {

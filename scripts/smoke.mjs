@@ -25,6 +25,46 @@ const fail = (m) => { failures++; console.log(`  FAIL  ${m}`); };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// A token no longer opens a session on its own: a new device has to be approved at the Mac. The
+// suite pairs once and then presents that credential, rather than raising a dialog per socket.
+let credential = null;
+const authMessage = () => JSON.stringify({
+  type: 'auth',
+  token,
+  deviceName: 'smoke test',
+  ...(credential ?? {}),
+});
+
+async function approveAtTheMac() {
+  for (let i = 0; i < 25; i++) {
+    try {
+      execFileSync('osascript', ['-e',
+        'tell application "System Events" to tell process "screenlink" to click button "Approve" of window 1'],
+        { stdio: 'ignore' });
+      return;
+    } catch { await sleep(400); }
+  }
+}
+
+async function pairOnce() {
+  console.log('\npairing');
+  const result = await new Promise((resolve) => {
+    const ws = new WebSocket(`${wsOrigin}`);
+    ws.onopen = () => ws.send(authMessage());
+    ws.onmessage = (e) => {
+      if (typeof e.data !== 'string') return;
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'pairing') approveAtTheMac();
+      if (msg.type === 'paired') { ws.close(); resolve({ deviceId: msg.deviceId, deviceSecret: msg.deviceSecret }); }
+      if (msg.type === 'info' && !credential) { ws.close(); resolve({}); }
+    };
+    setTimeout(() => { ws.close(); resolve(null); }, 20000);
+  });
+  if (!result) return fail('could not pair with the Mac');
+  credential = result.deviceId ? result : credential;
+  pass('paired with the Mac');
+}
+
 async function checkHealth() {
   console.log('\nhealth');
   const res = await fetch(`${base.origin}/health`);
@@ -55,7 +95,7 @@ function switchTo(id) {
   return new Promise((resolve) => {
     const ws = new WebSocket(`${wsOrigin}`);
     let sent = false;
-    ws.onopen = () => ws.send(JSON.stringify({ type: 'auth', token }));
+    ws.onopen = () => ws.send(authMessage());
     ws.onmessage = (e) => {
       if (typeof e.data !== 'string') return;
       const msg = JSON.parse(e.data);
@@ -77,7 +117,7 @@ async function checkStream() {
     let info = null;
     let status = null;
 
-    ws.onopen = () => ws.send(JSON.stringify({ type: 'auth', token }));
+    ws.onopen = () => ws.send(authMessage());
     ws.onmessage = (e) => {
       if (typeof e.data === 'string') {
         const msg = JSON.parse(e.data);
@@ -196,7 +236,7 @@ async function checkDisplaySwitch(list, startID) {
       let frames = 0;
       let requested = false;
 
-      ws.onopen = () => ws.send(JSON.stringify({ type: 'auth', token }));
+      ws.onopen = () => ws.send(authMessage());
       ws.onmessage = (e) => {
         if (typeof e.data === 'string') {
           const msg = JSON.parse(e.data);
@@ -215,7 +255,10 @@ async function checkDisplaySwitch(list, startID) {
     });
 
     if (!outcome.info) { fail(`switch to "${target.name}" produced no info`); continue; }
-    const expectW = Math.min(1920, target.width) - (Math.min(1920, target.width) % 2);
+    // Capture is sized from the panel's real pixels, not its point size, so a Retina display is
+    // capped by the stream width rather than by its own logical width.
+    const cap = Math.min(outcome.info.maxWidth || Infinity, target.nativeWidth);
+    const expectW = cap - (cap % 2);
     const okDims = outcome.info.width === expectW;
     okDims ? pass(`"${target.name}" -> ${outcome.info.width}x${outcome.info.height} (${outcome.frames} frames)`)
            : fail(`"${target.name}" reported ${outcome.info.width}px, expected ${expectW}px`);
@@ -328,6 +371,7 @@ async function checkScreenshot(health, list) {
 
 const health = await checkHealth();
 await checkAuth();
+await pairOnce();
 
 const displays = health.capturing ? await checkDisplays() : [];
 // Measure throughput against the main display, which is the one with activity on it. Without

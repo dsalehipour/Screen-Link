@@ -13,6 +13,7 @@ struct InputCommand: Decodable {
         case text
         case keyframe
         case display
+        case quality
     }
 
     let type: Kind
@@ -36,6 +37,9 @@ struct InputCommand: Decodable {
     var ctrl: Bool?
     /// CGDirectDisplayID for `.display`; clients read the valid set from StreamInfo.
     var display: UInt32?
+    /// Widest picture the client wants for `.quality`, in pixels. Zero asks for the panel's own
+    /// resolution; the server clamps anything larger to that.
+    var maxWidth: Int?
 
     var modifiers: CGEventFlags {
         var flags: CGEventFlags = []
@@ -55,6 +59,9 @@ struct StreamInfo: Encodable {
     let codec: String
     let displayID: UInt32
     let displays: [DisplayInfo]
+    /// The scale currently in force, so a reconnecting client can show which option is selected.
+    let maxWidth: Int
+    let bitrate: Int
 }
 
 enum BinaryFrame {
