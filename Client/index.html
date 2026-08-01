@@ -22,7 +22,11 @@
     background: var(--bg);
     color: var(--text);
     font: 13px/1.5 ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+    /* On a phone 100vh is the height with the browser chrome retracted, so while the URL bar is on
+       screen the last stretch of the layout sits below the fold. overflow:hidden then makes it
+       unreachable. dvh tracks the height actually available; vh stays as the fallback. */
     height: 100vh;
+    height: 100dvh;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -373,45 +377,67 @@ function describeControls() {
   }
   return controlling
     ? 'tap to click · hold for right-click · two fingers zoom and pan · three fingers scroll'
-    : 'read-only — two fingers zoom and pan';
+    : 'read-only — drag to move, pinch to zoom';
 }
 
 let lastTapAt = 0;
 let lastTapPoint = { x: 0, y: 0 };
 
-function applyView() {
-  clampView();
+function writeTransform() {
   canvas.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
+}
+
+/**
+ * How far the image has to shift along one axis to sit legally: centred when it is smaller than the
+ * viewport, and covering it with no gap at either edge when it is larger.
+ */
+function correction(start, size, stageStart, stageSize) {
+  if (size <= stageSize) return stageStart + (stageSize - size) / 2 - start;
+  if (start > stageStart) return stageStart - start;
+  const end = start + size;
+  const stageEnd = stageStart + stageSize;
+  if (end < stageEnd) return stageEnd - end;
+  return 0;
+}
+
+/**
+ * Writes the transform, then measures the result and corrects it.
+ *
+ * Deriving the bounds arithmetically instead meant reading offsetWidth and offsetTop, which are
+ * rounded to whole pixels and are defined relative to the offset parent rather than to the box the
+ * image actually has to stay inside. Both errors get multiplied by the zoom factor. Measuring the
+ * boxes that are really on screen sidesteps the question entirely.
+ */
+function applyView() {
+  view.scale = Math.min(Math.max(view.scale, 1), MAX_SCALE);
+  writeTransform();
+
+  const stage = canvas.parentElement.getBoundingClientRect();
+  const rect = canvas.getBoundingClientRect();
+  const dx = correction(rect.left, rect.width, stage.left, stage.width);
+  const dy = correction(rect.top, rect.height, stage.top, stage.height);
+  if (dx || dy) {
+    view.x += dx;
+    view.y += dy;
+    writeTransform();
+  }
+
   zoomResetBtn.textContent = view.scale > 1.01 ? `${Math.round(view.scale * 100)}%` : 'Fit';
 }
 
-// Keeps the image from being flung off screen: when it is larger than the viewport it must cover
-// it, and when it is smaller it sits centred.
-function clampView() {
-  view.scale = Math.min(Math.max(view.scale, 1), MAX_SCALE);
-  const width = canvas.offsetWidth * view.scale;
-  const height = canvas.offsetHeight * view.scale;
-  const stage = canvas.parentElement;
-
-  // Centre when the image is smaller than the viewport, otherwise keep it covering the viewport.
-  const fit = (current, offset, size, available) => {
-    if (size <= available) return (available - size) / 2 - offset;
-    return Math.min(Math.max(current, available - size - offset), -offset);
-  };
-  view.x = fit(view.x, canvas.offsetLeft, width, stage.clientWidth);
-  view.y = fit(view.y, canvas.offsetTop, height, stage.clientHeight);
-}
-
 function zoomAbout(clientX, clientY, factor) {
-  const stage = canvas.parentElement.getBoundingClientRect();
-  const px = clientX - stage.left;
-  const py = clientY - stage.top;
   const previous = view.scale;
   view.scale = Math.min(Math.max(view.scale * factor, 1), MAX_SCALE);
   const ratio = view.scale / previous;
-  // Hold the point under the fingers still while everything around it grows.
-  view.x = px - (px - view.x) * ratio;
-  view.y = py - (py - view.y) * ratio;
+  if (ratio === 1) return;
+
+  // Measured against the canvas itself rather than the stage: the canvas is centred by flexbox, so
+  // its own box already carries that offset, which anchoring against the stage would drop. With
+  // transform-origin at 0 0, a point sitting d away from the canvas origin lands at d * ratio, so
+  // translating back by the difference holds it under the fingers.
+  const rect = canvas.getBoundingClientRect();
+  view.x -= (clientX - rect.left) * (ratio - 1);
+  view.y -= (clientY - rect.top) * (ratio - 1);
   applyView();
 }
 
@@ -476,13 +502,19 @@ canvas.addEventListener('touchstart', (e) => {
     clearTimeout(gesture?.pressTimer);
     clearTimeout(gesture?.longPressTimer);
     gesture = count === 2
-      ? { mode: 'view', pinch: pinchState(e.touches) }
+      ? { mode: 'view', pinch: pinchState(e.touches), anchor: pinchState(e.touches) }
       : { mode: 'scroll', anchor: centroid(e.touches) };
     return;
   }
 
   if (gesture) return;  // a multi-finger gesture is still winding down
-  if (!controlling) return;
+
+  // With control off there is nothing for a single finger to send, so it moves the view instead.
+  // Demanding two fingers to pan in a read-only view makes the image feel stuck to the screen.
+  if (!controlling) {
+    gesture = { mode: 'view', pinch: null, anchor: centroid(e.touches) };
+    return;
+  }
 
   const at = normalized(e.touches[0]);
   const now = Date.now();
@@ -520,13 +552,19 @@ canvas.addEventListener('touchmove', (e) => {
   if (!gesture) return;
   e.preventDefault();
 
-  if (gesture.mode === 'view' && e.touches.length >= 2) {
-    const next = pinchState(e.touches);
-    zoomAbout(next.x, next.y, next.distance / gesture.pinch.distance);
-    view.x += next.x - gesture.pinch.x;
-    view.y += next.y - gesture.pinch.y;
+  if (gesture.mode === 'view') {
+    // One finger pans, two also zoom. Both are the same drag of the view, so they share a path and
+    // a single finger lifting out of a pinch keeps working instead of ending the gesture.
+    const multi = e.touches.length >= 2;
+    const next = multi ? pinchState(e.touches) : centroid(e.touches);
+    if (multi && gesture.pinch) {
+      zoomAbout(next.x, next.y, next.distance / gesture.pinch.distance);
+    }
+    view.x += next.x - gesture.anchor.x;
+    view.y += next.y - gesture.anchor.y;
     applyView();
-    gesture.pinch = next;
+    gesture.pinch = multi ? next : null;
+    gesture.anchor = next;
     return;
   }
 
@@ -561,7 +599,16 @@ canvas.addEventListener('touchmove', (e) => {
 function endTouch(e) {
   if (!gesture) return;
   e.preventDefault();
-  if (e.touches.length > 0) return;  // wait for the last finger
+  if (e.touches.length > 0) {
+    // Fingers remain, so re-anchor on what is still down. Otherwise the centroid shifts the moment
+    // one lifts and the view jumps by that distance.
+    if (gesture.mode === 'view') {
+      const multi = e.touches.length >= 2;
+      gesture.pinch = multi ? pinchState(e.touches) : null;
+      gesture.anchor = multi ? pinchState(e.touches) : centroid(e.touches);
+    }
+    return;
+  }
 
   if (gesture.mode === 'press') {
     clearTimeout(gesture.pressTimer);
