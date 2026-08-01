@@ -1,4 +1,4 @@
-import { config } from './config.js';
+import { requireIssuance } from './config.js';
 
 const API = 'https://api.cloudflare.com/client/v4';
 
@@ -13,7 +13,7 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API}${path}`, {
     ...init,
     headers: {
-      authorization: `Bearer ${config.cloudflareApiToken}`,
+      authorization: `Bearer ${requireIssuance().cloudflareApiToken}`,
       'content-type': 'application/json',
       ...init.headers,
     },
@@ -28,7 +28,7 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 async function findRecord(name: string, type: string): Promise<CloudflareRecord | undefined> {
   const records = await call<CloudflareRecord[]>(
-    `/zones/${config.cloudflareZoneId}/dns_records?type=${type}&name=${encodeURIComponent(name)}`,
+    `/zones/${requireIssuance().cloudflareZoneId}/dns_records?type=${type}&name=${encodeURIComponent(name)}`,
   );
   return records[0];
 }
@@ -38,12 +38,12 @@ async function upsert(name: string, type: string, content: string, ttl: number):
   const payload = JSON.stringify({ type, name, content, ttl, proxied: false });
 
   if (existing) {
-    await call(`/zones/${config.cloudflareZoneId}/dns_records/${existing.id}`, {
+    await call(`/zones/${requireIssuance().cloudflareZoneId}/dns_records/${existing.id}`, {
       method: 'PUT',
       body: payload,
     });
   } else {
-    await call(`/zones/${config.cloudflareZoneId}/dns_records`, { method: 'POST', body: payload });
+    await call(`/zones/${requireIssuance().cloudflareZoneId}/dns_records`, { method: 'POST', body: payload });
   }
 }
 
@@ -66,5 +66,5 @@ export async function setChallenge(hostname: string, value: string): Promise<voi
 export async function clearChallenge(hostname: string): Promise<void> {
   const record = await findRecord(`_acme-challenge.${hostname}`, 'TXT');
   if (!record) return;
-  await call(`/zones/${config.cloudflareZoneId}/dns_records/${record.id}`, { method: 'DELETE' });
+  await call(`/zones/${requireIssuance().cloudflareZoneId}/dns_records/${record.id}`, { method: 'DELETE' });
 }

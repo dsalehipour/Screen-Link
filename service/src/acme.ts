@@ -1,5 +1,5 @@
 import acme from 'acme-client';
-import { config } from './config.js';
+import { config, requireIssuance } from './config.js';
 import { clearChallenge, setChallenge } from './dns.js';
 
 let client: acme.Client | undefined;
@@ -8,9 +8,9 @@ async function acmeClient(): Promise<acme.Client> {
   if (client) return client;
   client = new acme.Client({
     directoryUrl: config.acmeDirectory,
-    accountKey: config.acmeAccountKey,
+    accountKey: requireIssuance().acmeAccountKey,
   });
-  await client.createAccount({ termsOfServiceAgreed: true, contact: [`mailto:${config.acmeContactEmail}`] });
+  await client.createAccount({ termsOfServiceAgreed: true, contact: [`mailto:${requireIssuance().acmeContactEmail}`] });
   return client;
 }
 
@@ -29,7 +29,7 @@ export async function signCertificate(hostname: string, csrPem: string): Promise
 
   return client.auto({
     csr: csrPem,
-    email: config.acmeContactEmail,
+    email: requireIssuance().acmeContactEmail,
     termsOfServiceAgreed: true,
     challengePriority: ['dns-01'],
     challengeCreateFn: async (_authz, challenge, keyAuthorization) => {

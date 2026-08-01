@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { certificateExpiry, signCertificate } from './acme.js';
 import { signingMessage, verifySignature } from './auth.js';
-import { config } from './config.js';
+import { config, requireIssuance } from './config.js';
 import {
   consumeNonce,
   createInstall,
@@ -18,7 +18,25 @@ import { setAddress } from './dns.js';
 
 const app = Fastify({ logger: true });
 
-const hostnameFor = (installId: string) => `${installId}.${config.zone}`;
+const hostnameFor = (installId: string) => `${installId}.${requireIssuance().zone}`;
+
+/**
+ * Until a domain and its credentials exist there is nothing to hand out, so every route that would
+ * touch DNS or ACME reports that plainly rather than failing somewhere deeper.
+ */
+app.addHook('onRequest', async (request, reply) => {
+  if (config.configured || request.url.startsWith('/healthz')) return;
+  reply.code(503).send({
+    error: 'service is not configured yet',
+    missing: [
+      'SCREENLINK_ZONE',
+      'CLOUDFLARE_ZONE_ID',
+      'CLOUDFLARE_API_TOKEN',
+      'ACME_CONTACT_EMAIL',
+      'ACME_ACCOUNT_KEY',
+    ],
+  });
+});
 
 /** RFC 1918 and loopback only: the whole design assumes the phone is already on the same network. */
 function isPrivateAddress(address: string): boolean {
@@ -72,7 +90,7 @@ async function authenticate(
   return install;
 }
 
-app.get('/healthz', async () => ({ ok: true }));
+app.get('/healthz', async () => ({ ok: true, configured: config.configured }));
 
 /**
  * Claims a hostname. The only unauthenticated endpoint, and therefore the only one that can burn

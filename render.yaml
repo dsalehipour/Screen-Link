@@ -1,3 +1,5 @@
+# Only the certificate issuance service is deployed. The repository root is a macOS app that runs
+# on the user's own machine, so the service is built from its own subdirectory via rootDir.
 databases:
   - name: screenlink-db
     databaseName: screenlink
@@ -9,6 +11,7 @@ services:
     name: screenlink-certs
     runtime: node
     plan: free
+    rootDir: service
     buildCommand: npm ci && npm run build
     startCommand: npm start
     healthCheckPath: /healthz
@@ -17,6 +20,8 @@ services:
         fromDatabase:
           name: screenlink-db
           property: connectionString
+      # The five settings below are left unset on the first deploy. The service boots without them
+      # and answers 503 on every issuance route, so the deploy itself is still a real signal.
       # Zone that install hostnames are created under, e.g. screenlink.example
       - key: SCREENLINK_ZONE
         sync: false

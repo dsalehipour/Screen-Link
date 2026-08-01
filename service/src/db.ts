@@ -8,7 +8,9 @@ export const pool = new pg.Pool({
   connectionString: config.databaseUrl,
   // Render's managed Postgres terminates TLS with a certificate chain the default verifier does
   // not carry. The connection is still encrypted.
-  ssl: config.databaseUrl.includes('localhost') ? false : { rejectUnauthorized: false },
+  ssl: /@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(config.databaseUrl)
+    ? false
+    : { rejectUnauthorized: false },
 });
 
 /**
