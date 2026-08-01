@@ -33,6 +33,9 @@ final class Application: ScreenCapturerDelegate {
     /// request lines, out of any proxy or access log, and out of the Referer header, so the only
     /// place it exists is the address bar of the device that scanned the code.
     func publicURL() -> String {
+        if case .running(let base) = tunnel.state {
+            return "\(base)/#t=\(config.token)"
+        }
         let scheme = config.useTLS ? "https" : "http"
         return "\(scheme)://\(config.bindHost):\(config.port)/#t=\(config.token)"
     }
@@ -53,6 +56,7 @@ final class Application: ScreenCapturerDelegate {
     }
 
     let devices: DeviceStore
+    let tunnel = TunnelController()
     /// Raised when a device is waiting on a decision, so the menu bar can put it in front of someone.
     var onPairingRequest: ((PairingRequest) -> Void)?
     var onPairingWithdrawn: ((String) -> Void)?
@@ -110,6 +114,21 @@ final class Application: ScreenCapturerDelegate {
 
         // Detached so the retry loop never delays the server coming up.
         Task { await self.startCapture() }
+
+        tunnel.onStateChange = { [weak self] state in
+            guard let self else { return }
+            switch state {
+            case .running:
+                Log.info("internet link open: \(publicURL())")
+            case .failed(let reason):
+                Log.error("internet link failed: \(reason)")
+            case .starting:
+                Log.info("opening internet link…")
+            case .off:
+                Log.info("internet link closed")
+            }
+        }
+        if config.tunnel { menuBarSetTunnel(true) }
 
         Log.info("")
         Log.info("  open  \(publicURL())")
@@ -429,7 +448,9 @@ extension Application: MenuBarDelegate {
                             viewers: server.clientCount,
                             fingerprint: certificateFingerprint,
                             displayName: active?.name ?? "your screen",
-                            devices: devices.approved)
+                            devices: devices.approved,
+                            tunnel: tunnel.state,
+                            tunnelInstalled: TunnelController.isInstalled)
     }
 
     func menuBarResolvePairing(requestId: String, approved: Bool) {
@@ -444,7 +465,25 @@ extension Application: MenuBarDelegate {
         revokeAllDevices()
     }
 
+    /// Turning the tunnel on pulls the server back to loopback.
+    ///
+    /// cloudflared connects locally, so nothing needs to be listening on the network, and a socket
+    /// that is not there cannot be reached by anything on the same wifi. It also means no
+    /// certificate: Cloudflare presents a real one at their edge, which is what removes the warning
+    /// screen the self-signed certificate causes.
+    func menuBarSetTunnel(_ enabled: Bool) {
+        guard enabled else {
+            tunnel.stop()
+            return
+        }
+        rebind(host: "127.0.0.1", tls: false)
+        tunnel.start(localPort: config.port)
+    }
+
     func menuBarSetNetworkAccess(_ enabled: Bool) {
+        // The two are alternatives, and leaving a LAN socket open behind a tunnel would widen the
+        // exposure for nothing.
+        if enabled, tunnel.isActive { tunnel.stop() }
         guard enabled else { return rebind(host: "127.0.0.1", tls: false) }
         guard let address = NetworkInterfaces.primaryIPv4() else {
             Log.warn("no local network address available; staying on this Mac only")

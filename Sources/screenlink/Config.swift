@@ -17,6 +17,8 @@ struct Config {
     var logPath: String?
     /// CGDirectDisplayID to capture at startup; nil selects the main display.
     var displayID: UInt32?
+    /// Open a Cloudflare tunnel at startup, making this Mac reachable from outside the network.
+    var tunnel: Bool = false
 
     /// Where anything that has to outlive a run is kept: the certificate and the approved devices.
     static func supportDirectory() -> URL {
@@ -47,6 +49,7 @@ struct Config {
             case "--no-input": c.allowInput = false
             case "--host": if let v = it.next() { c.bindHost = v }
             case "--tls": c.useTLS = true
+            case "--tunnel": c.tunnel = true
             case "--lan":
                 // TLS comes along automatically: off the loopback interface the token and the
                 // screen contents would otherwise cross the network in the clear.

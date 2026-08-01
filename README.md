@@ -156,25 +156,51 @@ character and any keyboard layout without a reverse keycode lookup. Everything e
 ## Options
 
 ```
---http-port N     default 8766
---ws-port N       default 8765
+--port N          default 8766 (HTTP and WebSocket share it)
 --fps N           default 60
 --max-width N     default 1920 (capture is downscaled to fit)
 --bitrate N       default 12000000
 --no-input        serve video but ignore all input commands
 --token S         shared secret
+--host H          interface to bind; defaults to 127.0.0.1
+--tls             serve HTTPS with a self-signed certificate
+--lan             bind the primary LAN address and turn on TLS
+--tunnel          open a Cloudflare tunnel and stay on loopback
 --client PATH     serve the viewer from this file instead of the bundle copy
 --log PATH        also write logs here
 ```
+
+## Reaching the Mac
+
+Three ways, in increasing order of exposure.
+
+**This Mac only** is the default: loopback, nothing on the network.
+
+**Your network** binds one chosen LAN address, never `0.0.0.0`, and turns on TLS with a self-signed
+certificate. Browsers show a warning the first time. Tapping through it is safe enough here but does
+leave you unable to tell a real warning from an attacker's, which is part of why approval is
+required below.
+
+**Anywhere** runs `cloudflared` and keeps the server on loopback, so nothing listens on your network
+at all. Cloudflare presents a real certificate, so there is no warning. Two things to know: the
+address changes each time it starts, and Cloudflare terminates TLS, so they can see the screen and
+the keystrokes. If that matters, put Cloudflare Access in front of the hostname or use a mesh VPN
+instead.
 
 ## Security
 
 This app can see and control everything on the machine, so treat it accordingly.
 
-- Both listeners bind to `127.0.0.1` only and are never exposed to the network.
-- Every privileged route requires the shared token; the WebSocket drops clients that fail auth.
-- `--no-input` gives a read-only stream.
-- The browser client starts read-only and requires an explicit click to enable control.
+- **The link is not access.** A device presents a credential from an earlier approval, or else the
+  token only buys a request that someone at this Mac has to agree to. A six-digit code is shown on
+  both screens and has to match, so a second party holding the link cannot be waved through by
+  someone who assumes the prompt is about their own phone. Approved devices are listed in the menu
+  bar and can be revoked, individually or all at once.
+- Credentials are stored as SHA-256 hashes, so a copy of `devices.json` opens nothing.
+- The token travels in the URL fragment, which browsers never send to a server. It stays out of
+  request lines, access logs and the Referer header, and is not substituted into the page.
+- Wrong tokens are counted per source address and throttled.
+- `--no-input` gives a read-only stream, and the browser client starts read-only.
 - macOS shows its own screen-recording indicator in the menu bar whenever capture is live. That
   indicator is drawn by the system and this app cannot suppress or fake it.
 
@@ -182,12 +208,11 @@ Two limits worth knowing: input cannot be injected into secure input contexts, s
 and the login window will ignore it; and this design could never ship on the Mac App Store, since
 Accessibility-based input injection for remote control is not permitted there.
 
-### Before exposing this beyond localhost
+### Still missing
 
-The current token check is adequate for a loopback tool and nothing more. Going further needs, at
-minimum, TLS, an origin allowlist, per-session consent that a web page cannot fabricate, and a
-session timeout. At that point WebRTC is the better transport anyway: it brings congestion control,
-retransmission, and NAT traversal, none of which a raw WebSocket gives you.
+Sessions do not expire, so a revoked device is cut off but an approved one stays approved
+indefinitely. There is no origin allowlist. And a raw WebSocket gives you no congestion control or
+retransmission, which WebRTC would; over a tunnel on a bad connection that difference shows.
 
 ## Development
 

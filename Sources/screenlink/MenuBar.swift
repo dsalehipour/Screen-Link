@@ -10,12 +10,22 @@ struct MenuBarState {
     var fingerprint: String?
     var displayName: String
     var devices: [PairedDevice]
+    var tunnel: TunnelController.State
+    var tunnelInstalled: Bool
+
+    var tunnelActive: Bool {
+        switch tunnel {
+        case .running, .starting: return true
+        case .off, .failed: return false
+        }
+    }
 }
 
 protocol MenuBarDelegate: AnyObject {
     func menuBarState() -> MenuBarState
     func menuBarSetNetworkAccess(_ enabled: Bool)
     func menuBarRotateToken()
+    func menuBarSetTunnel(_ enabled: Bool)
     func menuBarResolvePairing(requestId: String, approved: Bool)
     func menuBarRevokeDevice(_ deviceId: String)
     func menuBarRevokeAllDevices()
@@ -64,10 +74,22 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.removeAllItems()
         guard let state = delegate?.menuBarState() else { return }
 
-        if state.networkEnabled {
+        switch state.tunnel {
+        case .running:
             addQRSection(to: menu, state: state)
-        } else {
-            addLocalOnlySection(to: menu)
+            menu.addItem(caption("Reachable from anywhere. Cloudflare can see this screen."))
+        case .starting:
+            menu.addItem(header("Opening internet link…"))
+            menu.addItem(caption("Waiting for Cloudflare to assign an address."))
+        case .failed(let reason):
+            menu.addItem(header("Internet link failed"))
+            menu.addItem(caption(reason))
+        case .off:
+            if state.networkEnabled {
+                addQRSection(to: menu, state: state)
+            } else {
+                addLocalOnlySection(to: menu)
+            }
         }
 
         menu.addItem(.separator())
@@ -86,7 +108,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         toggle.state = state.networkEnabled ? .on : .off
         menu.addItem(toggle)
 
-        if state.networkEnabled {
+        addTunnelToggle(to: menu, state: state)
+
+        if state.networkEnabled || state.tunnelActive {
             let rotate = NSMenuItem(title: "Disconnect all devices and reset link",
                                     action: #selector(rotateToken), keyEquivalent: "")
             rotate.target = self
@@ -146,6 +170,26 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         if state.capturing {
             menu.addItem(caption("Sharing \(state.displayName)"))
+        }
+    }
+
+    private func addTunnelToggle(to menu: NSMenu, state: MenuBarState) {
+        guard state.tunnelInstalled else {
+            let missing = NSMenuItem(title: "Reach this Mac from anywhere", action: nil, keyEquivalent: "")
+            missing.isEnabled = false
+            menu.addItem(missing)
+            menu.addItem(caption("Needs cloudflared: brew install cloudflared"))
+            return
+        }
+
+        let item = NSMenuItem(title: "Reach this Mac from anywhere",
+                              action: #selector(toggleTunnel), keyEquivalent: "")
+        item.target = self
+        item.state = state.tunnelActive ? .on : .off
+        menu.addItem(item)
+        if !state.tunnelActive {
+            // Said before it is switched on, not after, because afterwards the link already exists.
+            menu.addItem(caption("Creates a public web address. Devices still need approval here."))
         }
     }
 
@@ -257,6 +301,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func toggleNetwork(_ sender: NSMenuItem) {
         delegate?.menuBarSetNetworkAccess(sender.state != .on)
+    }
+
+    @objc private func toggleTunnel(_ sender: NSMenuItem) {
+        delegate?.menuBarSetTunnel(sender.state != .on)
     }
 
     @objc private func rotateToken() {
