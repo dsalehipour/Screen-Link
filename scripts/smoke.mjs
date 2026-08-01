@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { approve } from './approve.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const token = readFileSync(join(root, 'build/token'), 'utf8').trim();
@@ -35,17 +36,6 @@ const authMessage = () => JSON.stringify({
   ...(credential ?? {}),
 });
 
-async function approveAtTheMac() {
-  for (let i = 0; i < 25; i++) {
-    try {
-      execFileSync('osascript', ['-e',
-        'tell application "System Events" to tell process "screenlink" to click button "Approve" of window 1'],
-        { stdio: 'ignore' });
-      return;
-    } catch { await sleep(400); }
-  }
-}
-
 async function pairOnce() {
   console.log('\npairing');
   const result = await new Promise((resolve) => {
@@ -54,7 +44,8 @@ async function pairOnce() {
     ws.onmessage = (e) => {
       if (typeof e.data !== 'string') return;
       const msg = JSON.parse(e.data);
-      if (msg.type === 'pairing') approveAtTheMac();
+      // By code, so a prompt left over from another device is never the one answered.
+      if (msg.type === 'pairing') approve(msg.code);
       if (msg.type === 'paired') { ws.close(); resolve({ deviceId: msg.deviceId, deviceSecret: msg.deviceSecret }); }
       if (msg.type === 'info' && !credential) { ws.close(); resolve({}); }
     };

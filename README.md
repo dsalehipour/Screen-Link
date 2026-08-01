@@ -63,6 +63,18 @@ immediate.
 Nothing is sent to the Mac until a gesture can no longer turn out to be a pinch, so resting two
 fingers on the glass does not twitch the cursor.
 
+### On the home screen
+
+Chrome's **Add to Home screen** installs it as a standalone app: its own icon, no browser chrome,
+and the whole screen for the picture. The icon is drawn by the server at whatever size is asked for
+(`AppIcon.swift`), and is declared maskable so Android shapes it like every other icon rather than
+dropping a square on a white circle.
+
+The launcher opens `/` with no token, which works because approval is remembered per device. Two
+consequences worth knowing: a tunnel address changes every time the app restarts, so the saved icon
+goes stale and the credential — being origin-scoped — is lost with it. A stable hostname avoids
+both.
+
 ### Resolution
 
 The stream is downscaled to 1920 px wide by default. The picker in the bar goes from 1280 up to the
@@ -283,10 +295,15 @@ to test a gesture. Launch one with `--remote-debugging-port=9222` first.
 ```bash
 node scripts/smoke.mjs                          # protocol, input mapping, display switching
 node scripts/pairing-check.mjs ws://127.0.0.1:8766 "$(cat build/token)"
+node scripts/pairing-queue-check.mjs ws://127.0.0.1:8766 "$(cat build/token)"
 node scripts/gesture-check.mjs http://127.0.0.1:8766/ "$(cat build/token)"
 node scripts/touch-check.mjs "http://127.0.0.1:8766/#t=$(cat build/token)"
 node scripts/display-check.mjs http://127.0.0.1:8766/ "$(cat build/token)"
 ```
+
+Anything that answers a pairing prompt does so by matching the six-digit code (`approve.mjs`).
+Clicking whichever prompt happens to be up will eventually approve the wrong request and look like a
+product failure.
 
 `gesture-check` and `smoke` drive the Mac for real — they move the pointer and press buttons. Run
 them when the desktop underneath can tolerate a stray click.

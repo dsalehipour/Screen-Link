@@ -428,6 +428,28 @@ final class Application: ScreenCapturerDelegate {
         case "/":
             respond(clientPage())
 
+        // Artwork and the manifest are unauthenticated for the same reason the page itself is:
+        // they carry nothing, and the browser fetches the manifest without ever seeing the
+        // fragment the token lives in.
+        case "/manifest.webmanifest":
+            respond(HTTPResponse(status: 200, contentType: "application/manifest+json",
+                                 body: (try? JSONSerialization.data(withJSONObject: AppIcon.manifest()))
+                                     ?? Data("{}".utf8),
+                                 extraHeaders: ["Cache-Control": "public, max-age=3600"]))
+
+        case "/icon.svg":
+            respond(HTTPResponse(status: 200, contentType: "image/svg+xml",
+                                 body: Data(AppIcon.svg.utf8),
+                                 extraHeaders: ["Cache-Control": "public, max-age=86400"]))
+
+        case let path where path.hasPrefix("/icon-") && path.hasSuffix(".png"):
+            let digits = path.dropFirst("/icon-".count).dropLast(".png".count)
+            guard let size = Int(digits), let png = AppIcon.png(size: size) else {
+                return respond(.text("not found", status: 404))
+            }
+            respond(HTTPResponse(status: 200, contentType: "image/png", body: png,
+                                 extraHeaders: ["Cache-Control": "public, max-age=86400"]))
+
         case "/health":
             respond(.json([
                 "ok": true,

@@ -252,7 +252,9 @@ final class Server {
         var head = "HTTP/1.1 \(response.status) \(reason)\r\n"
         head += "Content-Type: \(response.contentType)\r\n"
         head += "Content-Length: \(response.body.count)\r\n"
-        head += "Cache-Control: no-store\r\n"
+        // Nothing is cacheable by default because most of what this serves is either a secret or a
+        // live view of the machine. Static artwork opts out by setting its own.
+        if response.extraHeaders["Cache-Control"] == nil { head += "Cache-Control: no-store\r\n" }
         // This app can see and drive the whole machine, so no other origin may embed or script it.
         head += "X-Content-Type-Options: nosniff\r\n"
         head += "X-Frame-Options: DENY\r\n"

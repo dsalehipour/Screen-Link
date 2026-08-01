@@ -6,6 +6,15 @@
      the page zoom too would fight the canvas transform and break coordinate mapping. -->
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>screenlink</title>
+<!-- Saved to an Android home screen this opens without browser chrome, which is both nicer and one
+     less thing eating the viewport. The icons are drawn by the server at whatever size is asked
+     for; see AppIcon.swift. -->
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<meta name="theme-color" content="#14181d">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <style>
   :root {
     --bg: #0b0d10;

@@ -9,6 +9,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Session, sleep } from './cdp.mjs';
+import { approveFromPage } from './approve.mjs';
 
 const run = promisify(execFile);
 const URL = process.argv[2] ?? 'http://127.0.0.1:8766/';
@@ -27,13 +28,7 @@ await session.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTou
 
 console.log('landed on:', await session.open(`${URL}#t=${TOKEN}`));
 await sleep(1500);
-for (let i = 0; i < 20; i++) {
-  try {
-    await run('osascript', ['-e',
-      'tell application "System Events" to tell process "screenlink" to click button "Approve" of window 1']);
-    break;
-  } catch { await sleep(400); }
-}
+await approveFromPage(session);
 await sleep(4000);
 
 // Everything the page puts on the wire, so a gesture can be judged by what the Mac would receive.

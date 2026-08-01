@@ -228,7 +228,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// link cannot be approved by a person who assumes the prompt is about their own phone. Only one
     /// prompt is up at a time, so what is being agreed to is always the request being looked at.
     func presentPairingRequest(_ request: PairingRequest) {
-        DispatchQueue.main.async { [weak self] in
+        onMain { [weak self] in
             guard let self else { return }
             waiting.append(request)
             presentNext()
@@ -237,7 +237,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     /// Takes down a prompt whose device is no longer there.
     func withdrawPairingRequest(_ requestId: String) {
-        DispatchQueue.main.async { [weak self] in
+        onMain { [weak self] in
             guard let self else { return }
             waiting.removeAll { $0.id == requestId }
             if presenting?.id == requestId {
@@ -245,6 +245,18 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 NSApp.abortModal()
             }
         }
+    }
+
+    /// Runs on the main thread, including while a modal prompt is up.
+    ///
+    /// `DispatchQueue.main.async` will not do here. The main queue is drained in the common run loop
+    /// modes, and the loop `NSAlert.runModal` spins is not one of them, so a block posted while a
+    /// prompt is on screen does not run until that prompt closes — which is precisely when it is
+    /// needed, since the whole point is to take the prompt down. Naming the modal mode explicitly is
+    /// what gets it delivered.
+    private func onMain(_ work: @escaping () -> Void) {
+        RunLoop.main.perform(inModes: [.common, .modalPanel], block: work)
+        CFRunLoopWakeUp(CFRunLoopGetMain())
     }
 
     private func presentNext() {

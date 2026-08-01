@@ -4,24 +4,11 @@
  * The protocol side of this is easy to confirm and was never the problem; what matters is whether
  * the canvas ends up showing the other screen, which only a real decode can answer.
  */
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { Session, sleep } from './cdp.mjs';
+import { approveFromPage } from './approve.mjs';
 
-const run = promisify(execFile);
 const URL = process.argv[2] ?? 'http://127.0.0.1:8766/';
 const TOKEN = process.argv[3] ?? '';
-
-async function approve() {
-  for (let i = 0; i < 25; i++) {
-    try {
-      await run('osascript', ['-e',
-        'tell application "System Events" to tell process "screenlink" to click button "Approve" of window 1']);
-      return true;
-    } catch { await sleep(400); }
-  }
-  return false;
-}
 
 const session = await Session.attach();
 await session.send('Emulation.setDeviceMetricsOverride', {
@@ -31,7 +18,7 @@ await session.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTou
 
 console.log('landed on:', await session.open(`${URL}#t=${TOKEN}`));
 await sleep(1500);
-await approve();
+await approveFromPage(session);
 await sleep(4000);
 
 /** A cheap signature of what is on screen, plus the state the client believes it is in. */
