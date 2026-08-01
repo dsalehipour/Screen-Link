@@ -32,7 +32,7 @@ open "$APP" --args \
 
 sleep 1.2
 echo
-echo "  open:  http://127.0.0.1:${PORT}/?token=${TOKEN}"
+echo "  open:  http://127.0.0.1:${PORT}/#t=${TOKEN}"
 echo "  stop:  scripts/stop.sh"
 echo
 tail -f "$LOG"

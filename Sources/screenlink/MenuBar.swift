@@ -9,12 +9,16 @@ struct MenuBarState {
     var viewers: Int
     var fingerprint: String?
     var displayName: String
+    var devices: [PairedDevice]
 }
 
 protocol MenuBarDelegate: AnyObject {
     func menuBarState() -> MenuBarState
     func menuBarSetNetworkAccess(_ enabled: Bool)
     func menuBarRotateToken()
+    func menuBarResolvePairing(requestId: String, approved: Bool)
+    func menuBarRevokeDevice(_ deviceId: String)
+    func menuBarRevokeAllDevices()
 }
 
 /// The status-bar surface.
@@ -25,6 +29,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private weak var delegate: MenuBarDelegate?
     private var refreshTimer: Timer?
+    /// Requests queued behind the one on screen, and the one being shown.
+    private var waiting: [PairingRequest] = []
+    private var presenting: PairingRequest?
 
     init(delegate: MenuBarDelegate) {
         self.delegate = delegate
@@ -65,6 +72,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
         addStatusSection(to: menu, state: state)
+
+        if !state.devices.isEmpty {
+            menu.addItem(.separator())
+            addDeviceSection(to: menu, state: state)
+        }
+
         menu.addItem(.separator())
 
         let toggle = NSMenuItem(title: "Allow access from my network",
@@ -136,7 +149,111 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
     }
 
+    private func addDeviceSection(to menu: NSMenu, state: MenuBarState) {
+        menu.addItem(header("Approved devices"))
+
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        for device in state.devices {
+            let seen = formatter.localizedString(for: device.lastSeenAt, relativeTo: Date())
+            let item = NSMenuItem(title: device.name, action: nil, keyEquivalent: "")
+
+            // Revoking lives in a submenu so it cannot happen on a stray click, and so the row
+            // itself stays readable.
+            let submenu = NSMenu()
+            submenu.addItem(caption("Last seen \(seen)"))
+            submenu.addItem(.separator())
+            let revoke = NSMenuItem(title: "Revoke this device",
+                                    action: #selector(revokeDevice(_:)), keyEquivalent: "")
+            revoke.target = self
+            revoke.representedObject = device.id
+            submenu.addItem(revoke)
+            item.submenu = submenu
+            menu.addItem(item)
+        }
+
+        let revokeAll = NSMenuItem(title: "Revoke all devices",
+                                   action: #selector(revokeAllDevices), keyEquivalent: "")
+        revokeAll.target = self
+        menu.addItem(revokeAll)
+    }
+
+    /// Puts a waiting device in front of the person at the Mac.
+    ///
+    /// The code is shown on both screens and has to be compared, so that someone else holding the
+    /// link cannot be approved by a person who assumes the prompt is about their own phone. Only one
+    /// prompt is up at a time, so what is being agreed to is always the request being looked at.
+    func presentPairingRequest(_ request: PairingRequest) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            waiting.append(request)
+            presentNext()
+        }
+    }
+
+    /// Takes down a prompt whose device is no longer there.
+    func withdrawPairingRequest(_ requestId: String) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            waiting.removeAll { $0.id == requestId }
+            if presenting?.id == requestId {
+                // Returns .abort from runModal, which is treated as no decision at all.
+                NSApp.abortModal()
+            }
+        }
+    }
+
+    private func presentNext() {
+        guard presenting == nil, !waiting.isEmpty else { return }
+        let request = waiting.removeFirst()
+        presenting = request
+
+        let alert = NSAlert()
+        alert.messageText = "Pairing code \(request.code)"
+        alert.informativeText = """
+        \(request.name) at \(request.address) wants to connect.
+
+        Approve only if this same code is showing on that device. An approved device can watch this \
+        screen and control it, until you revoke it.
+        """
+        alert.alertStyle = .warning
+        // Deny is the default, so leaning on the return key cannot grant access to a prompt that
+        // was not expected.
+        alert.addButton(withTitle: "Deny")
+        alert.addButton(withTitle: "Approve")
+
+        // A request nobody answers should lapse on screen too, rather than sitting there long after
+        // the device stopped waiting.
+        let expiry = Timer.scheduledTimer(withTimeInterval: DeviceStore.requestLifetime,
+                                          repeats: false) { [weak self] _ in
+            self?.withdrawPairingRequest(request.id)
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        expiry.invalidate()
+        presenting = nil
+
+        if response == .abort {
+            Log.info("pairing request from \(request.name) withdrawn before a decision")
+        } else {
+            let approved = response == .alertSecondButtonReturn
+            delegate?.menuBarResolvePairing(requestId: request.id, approved: approved)
+            Log.info("pairing \(approved ? "approved" : "denied") for \(request.name)")
+        }
+        presentNext()
+    }
+
     // MARK: - Actions
+
+    @objc private func revokeDevice(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        delegate?.menuBarRevokeDevice(id)
+    }
+
+    @objc private func revokeAllDevices() {
+        delegate?.menuBarRevokeAllDevices()
+    }
 
     @objc private func toggleNetwork(_ sender: NSMenuItem) {
         delegate?.menuBarSetNetworkAccess(sender.state != .on)

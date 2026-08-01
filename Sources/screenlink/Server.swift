@@ -39,10 +39,20 @@ final class Server {
         /// Nothing is sent to a client until its first keyframe. Requesting an IDR at auth time is
         /// not enough on its own, because a delta frame already in flight can beat it to the socket.
         var awaitingKeyframe = true
+        /// Set while this connection is waiting for someone at the Mac to decide about it.
+        var pendingRequestId: String?
+        var deviceId: String?
         /// Touched only on the server queue, unlike the flags above.
         var inbox: [UInt8] = []
         var fragment = Data()
         init(_ connection: NWConnection) { self.connection = connection }
+
+        var address: String {
+            switch connection.endpoint {
+            case .hostPort(let host, _): return "\(host)".components(separatedBy: "%").first ?? "\(host)"
+            default: return "unknown"
+            }
+        }
     }
 
     private static let maxHeaderBytes = 1 << 16
@@ -54,15 +64,25 @@ final class Server {
     private var listener: NWListener?
     private var clients: [ObjectIdentifier: Client] = [:]
     private var token: String
+    private let devices: DeviceStore
+    /// Wrong tokens per source address, so the link cannot be guessed by trying repeatedly.
+    private var failures: [String: (count: Int, blockedUntil: Date)] = [:]
+    private static let maxFailures = 5
+    private static let failureCooldown: TimeInterval = 60
 
     var httpHandler: ((HTTPRequest, @escaping (HTTPResponse) -> Void) -> Void)?
     var onCommand: ((InputCommand) -> Void)?
     var onClientReady: (() -> Void)?
     var streamInfo: (() -> StreamInfo?)?
     var statusMessage: (() -> String)?
+    /// Raised when a device holding the link asks to be approved here.
+    var onPairingRequest: ((PairingRequest) -> Void)?
+    /// Raised when a waiting device went away, so its prompt can be taken down.
+    var onPairingWithdrawn: ((String) -> Void)?
 
-    init(token: String) {
+    init(token: String, devices: DeviceStore) {
         self.token = token
+        self.devices = devices
     }
 
     func start(host: NWEndpoint.Host, port: UInt16, identity: SecIdentity?) throws {
@@ -135,9 +155,19 @@ final class Server {
     private func drop(_ connection: NWConnection) {
         lock.lock()
         let removed = clients.removeValue(forKey: ObjectIdentifier(connection))
+        let pendingRequestId = removed?.pendingRequestId
         lock.unlock()
         connection.cancel()
-        if removed != nil { Log.info("client disconnected") }
+        guard removed != nil else { return }
+        Log.info("client disconnected")
+
+        // A device that gave up while waiting must take its request with it. Leaving the prompt on
+        // screen would stack dialogs for connections that no longer exist, and invite someone to
+        // approve one request while looking at another.
+        if let requestId = pendingRequestId {
+            devices.deny(requestId: requestId)
+            onPairingWithdrawn?(requestId)
+        }
     }
 
     // MARK: - HTTP
@@ -298,29 +328,7 @@ final class Server {
         guard let command = try? JSONDecoder().decode(InputCommand.self, from: data) else { return }
 
         if command.type == .auth {
-            lock.lock()
-            let expected = token
-            lock.unlock()
-            // Authenticating over the socket rather than the handshake URL keeps the token out of
-            // proxy and server logs, which record request lines but not message payloads.
-            guard let supplied = command.token, Self.constantTimeEquals(supplied, expected) else {
-                Log.warn("client rejected: bad token")
-                drop(client.connection)
-                return
-            }
-            lock.lock()
-            client.authenticated = true
-            lock.unlock()
-            Log.info("client authenticated")
-            if let info = streamInfo?(), let json = try? JSONEncoder().encode(info) {
-                send(json, to: client, opcode: .text)
-            } else {
-                let payload = ["type": "status", "message": statusMessage?() ?? "capture unavailable"]
-                if let json = try? JSONSerialization.data(withJSONObject: payload) {
-                    send(json, to: client, opcode: .text)
-                }
-            }
-            onClientReady?()
+            authenticate(command, client: client)
             return
         }
 
@@ -338,6 +346,120 @@ final class Server {
             return
         }
         onCommand?(command)
+    }
+
+    /// Two ways in, and they are deliberately unequal.
+    ///
+    /// A device that was approved here before presents its credential and is let straight through.
+    /// Anything else has to prove it holds the link and is then put in front of a person at the Mac.
+    /// Holding the link is therefore not access, which is what keeps a leaked or phished token from
+    /// being enough on its own.
+    private func authenticate(_ command: InputCommand, client: Client) {
+        // Authenticating over the socket rather than the handshake URL keeps credentials out of
+        // proxy and server logs, which record request lines but not message payloads.
+        if let id = command.deviceId, let secret = command.deviceSecret,
+           devices.verify(deviceId: id, secret: secret) {
+            lock.lock()
+            client.deviceId = id
+            lock.unlock()
+            grant(client)
+            return
+        }
+
+        let address = client.address
+        if let block = failures[address], block.blockedUntil > Date() {
+            Log.warn("rejecting \(address): too many failed attempts")
+            drop(client.connection)
+            return
+        }
+
+        lock.lock()
+        let expected = token
+        lock.unlock()
+        guard let supplied = command.token, Self.constantTimeEquals(supplied, expected) else {
+            recordFailure(address)
+            Log.warn("client rejected: bad token")
+            drop(client.connection)
+            return
+        }
+        failures[address] = nil
+
+        // The credential presented was unknown or revoked, so this is a new device however it got
+        // the link. It waits here until somebody at the Mac says otherwise.
+        let request = devices.beginPairing(name: command.deviceName ?? "unnamed device",
+                                           address: address)
+        // Written under the lock because the decision arrives on the main thread. Without the
+        // barrier the approval can look for a waiting client and find nothing.
+        lock.lock()
+        client.pendingRequestId = request.id
+        lock.unlock()
+        Log.info("pairing requested by \(request.name) at \(address), code \(request.code)")
+        sendJSON(["type": "pairing", "code": request.code], to: client)
+        onPairingRequest?(request)
+    }
+
+    private func recordFailure(_ address: String) {
+        let existing = failures[address]?.count ?? 0
+        let count = existing + 1
+        failures[address] = (count, count >= Self.maxFailures
+            ? Date().addingTimeInterval(Self.failureCooldown)
+            : .distantPast)
+    }
+
+    /// Called once a person at the Mac has decided about a waiting device.
+    func resolvePairing(requestId: String, approved: Bool) {
+        lock.lock()
+        let waiting = clients.values.filter { $0.pendingRequestId == requestId }
+        lock.unlock()
+
+        guard approved, let credential = devices.approve(requestId: requestId) else {
+            devices.deny(requestId: requestId)
+            for client in waiting {
+                sendJSON(["type": "denied"], to: client)
+                // Give the refusal a moment to reach the device before the socket goes away.
+                queue.asyncAfter(deadline: .now() + 0.25) { [weak self] in self?.drop(client.connection) }
+            }
+            return
+        }
+
+        for client in waiting {
+            lock.lock()
+            client.pendingRequestId = nil
+            client.deviceId = credential.deviceId
+            lock.unlock()
+            // Handed over exactly once. Presenting it next time skips the approval entirely.
+            sendJSON(["type": "paired",
+                      "deviceId": credential.deviceId,
+                      "deviceSecret": credential.secret], to: client)
+            grant(client)
+        }
+    }
+
+    private func grant(_ client: Client) {
+        lock.lock()
+        client.authenticated = true
+        lock.unlock()
+        Log.info("client authenticated")
+        if let info = streamInfo?(), let json = try? JSONEncoder().encode(info) {
+            send(json, to: client, opcode: .text)
+        } else {
+            sendJSON(["type": "status", "message": statusMessage?() ?? "capture unavailable"], to: client)
+        }
+        onClientReady?()
+    }
+
+    /// Ends any session belonging to a device that is no longer allowed in.
+    func disconnectDevice(_ deviceId: String) {
+        lock.lock()
+        let matching = clients.values.filter { $0.deviceId == deviceId }
+        for client in matching { clients.removeValue(forKey: ObjectIdentifier(client)) }
+        lock.unlock()
+        for client in matching { client.connection.cancel() }
+    }
+
+    private func sendJSON(_ object: [String: Any], to client: Client) {
+        guard let data = try? JSONSerialization.data(withJSONObject: object) else { return }
+        send(data, to: client, opcode: .text)
     }
 
     /// Compares without leaking the position of the first mismatch through timing.

@@ -24,7 +24,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        menuBar = MenuBarController(delegate: application)
+        let menuBar = MenuBarController(delegate: application)
+        self.menuBar = menuBar
+        application.onPairingRequest = { [weak menuBar] request in
+            menuBar?.presentPairingRequest(request)
+        }
+        application.onPairingWithdrawn = { [weak menuBar] requestId in
+            menuBar?.withdrawPairingRequest(requestId)
+        }
 
         Task {
             do {

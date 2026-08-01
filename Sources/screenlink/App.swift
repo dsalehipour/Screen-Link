@@ -28,9 +28,13 @@ final class Application: ScreenCapturerDelegate {
     private(set) var certificateFingerprint: String?
 
     /// The address to hand to another device, as opposed to the loopback one used locally.
+    ///
+    /// The token rides in the fragment, which browsers never put on the wire. It stays out of
+    /// request lines, out of any proxy or access log, and out of the Referer header, so the only
+    /// place it exists is the address bar of the device that scanned the code.
     func publicURL() -> String {
         let scheme = config.useTLS ? "https" : "http"
-        return "\(scheme)://\(config.bindHost):\(config.port)/?token=\(config.token)"
+        return "\(scheme)://\(config.bindHost):\(config.port)/#t=\(config.token)"
     }
 
     private var codec: String {
@@ -48,9 +52,30 @@ final class Application: ScreenCapturerDelegate {
         set { stateLock.lock(); _captureReady = newValue; stateLock.unlock() }
     }
 
+    let devices: DeviceStore
+    /// Raised when a device is waiting on a decision, so the menu bar can put it in front of someone.
+    var onPairingRequest: ((PairingRequest) -> Void)?
+    var onPairingWithdrawn: ((String) -> Void)?
+
     init(config: Config) {
         self.config = config
-        self.server = Server(token: config.token)
+        self.devices = DeviceStore(directory: Config.supportDirectory())
+        self.server = Server(token: config.token, devices: devices)
+    }
+
+    func resolvePairing(requestId: String, approved: Bool) {
+        server.resolvePairing(requestId: requestId, approved: approved)
+    }
+
+    func revoke(deviceId: String) {
+        devices.revoke(deviceId: deviceId)
+        server.disconnectDevice(deviceId)
+    }
+
+    func revokeAllDevices() {
+        let all = devices.approved
+        devices.revokeAll()
+        for device in all { server.disconnectDevice(device.id) }
     }
 
     /// Servers come up before capture so a denied screen recording permission still leaves a
@@ -64,6 +89,8 @@ final class Application: ScreenCapturerDelegate {
                 : "screen recording permission not granted — approve screenlink in System Settings > Privacy & Security > Screen & System Audio Recording, then rerun scripts/run.sh"
         }
         server.onClientReady = { [weak self] in self?.encoder.requestKeyframe() }
+        server.onPairingRequest = { [weak self] request in self?.onPairingRequest?(request) }
+        server.onPairingWithdrawn = { [weak self] requestId in self?.onPairingWithdrawn?(requestId) }
         server.onCommand = { [weak self] command in
             guard let self else { return }
             // Choosing which display to watch is a view change, not input, so it stays available
@@ -342,8 +369,10 @@ final class Application: ScreenCapturerDelegate {
         guard let url = clientURL(), let template = try? String(contentsOf: url, encoding: .utf8) else {
             return .text("client/index.html not found", status: 500)
         }
-        let html = template.replacingOccurrences(of: "__TOKEN__", with: config.token)
-        return HTTPResponse(status: 200, contentType: "text/html; charset=utf-8", body: Data(html.utf8))
+        // The token is deliberately not substituted in. The page is an empty shell that reads the
+        // token from the fragment, so the secret never appears in a response body or a cache.
+        return HTTPResponse(status: 200, contentType: "text/html; charset=utf-8",
+                            body: Data(template.utf8))
     }
 
     /// Read from disk on every request so the browser client can be edited and reloaded without
@@ -399,7 +428,20 @@ extension Application: MenuBarDelegate {
                             accessibility: Permissions.hasAccessibility(prompt: false),
                             viewers: server.clientCount,
                             fingerprint: certificateFingerprint,
-                            displayName: active?.name ?? "your screen")
+                            displayName: active?.name ?? "your screen",
+                            devices: devices.approved)
+    }
+
+    func menuBarResolvePairing(requestId: String, approved: Bool) {
+        resolvePairing(requestId: requestId, approved: approved)
+    }
+
+    func menuBarRevokeDevice(_ deviceId: String) {
+        revoke(deviceId: deviceId)
+    }
+
+    func menuBarRevokeAllDevices() {
+        revokeAllDevices()
     }
 
     func menuBarSetNetworkAccess(_ enabled: Bool) {
@@ -412,6 +454,9 @@ extension Application: MenuBarDelegate {
         rebind(host: address, tls: true)
     }
 
+    /// Resets the link only. Devices already approved stay approved, because rotating is for a
+    /// link that got out, not for the devices you meant to let in; revoking those is separate and
+    /// deliberate.
     func menuBarRotateToken() {
         config.token = Config.randomToken()
         server.rotateToken(to: config.token)

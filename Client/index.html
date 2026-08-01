@@ -95,6 +95,8 @@
     position: absolute; inset: 16px;
     display: flex; align-items: center; justify-content: center;
     color: var(--muted); font-size: 14px; pointer-events: none; text-align: center;
+    /* The pairing code is shown here on its own line. */
+    white-space: pre-line;
   }
   #overlay.hidden { display: none; }
   .hint {
@@ -129,7 +131,48 @@
 </main>
 
 <script>
-const TOKEN = "__TOKEN__";
+// The token arrives in the fragment, which browsers never send to a server. It stays out of
+// request lines, access logs and the Referer header; the page is served without it and reads it
+// here. The query string is still accepted so older links keep working.
+const TOKEN = new URLSearchParams(location.hash.slice(1)).get('t')
+  ?? new URLSearchParams(location.search).get('token')
+  ?? '';
+
+// What this device presents on later visits. Approval happens once, at the Mac; from then on the
+// credential below is what opens a session, and revoking it there ends this device's access.
+const DEVICE_KEY = 'screenlink.device';
+
+function loadDevice() {
+  try {
+    return JSON.parse(localStorage.getItem(DEVICE_KEY)) ?? {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveDevice(device) {
+  try {
+    localStorage.setItem(DEVICE_KEY, JSON.stringify(device));
+  } catch (_) {
+    // Private browsing refuses storage. Pairing still works, it just repeats next visit.
+  }
+}
+
+/// A label for the approval prompt on the Mac, so the person deciding knows what is asking.
+function deviceLabel() {
+  const ua = navigator.userAgent;
+  const platform = /Android/.test(ua) ? 'Android'
+    : /iPhone|iPad/.test(ua) ? 'iOS'
+    : /Mac OS X/.test(ua) ? 'Mac'
+    : /Windows/.test(ua) ? 'Windows'
+    : 'device';
+  const browser = /EdgA?\//.test(ua) ? 'Edge'
+    : /Chrome\//.test(ua) ? 'Chrome'
+    : /Firefox\//.test(ua) ? 'Firefox'
+    : /Safari\//.test(ua) ? 'Safari'
+    : 'browser';
+  return `${browser} on ${platform}`;
+}
 
 // Same origin as this page: the server serves HTTP and WebSocket on one port, so anything that can
 // reach the page can reach the socket, through tunnels and reverse proxies included.
@@ -145,6 +188,8 @@ const controlBtn = document.getElementById('control');
 let ws = null;
 let decoder = null;
 let controlling = false;
+let awaitingApproval = false;
+let denied = false;
 let sawKeyframe = false;
 let chunkTimestamp = 0;
 
@@ -279,17 +324,47 @@ function connect() {
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
-    send({ type: 'auth', token: TOKEN });
+    const device = loadDevice();
+    send({
+      type: 'auth',
+      token: TOKEN,
+      deviceId: device.id,
+      deviceSecret: device.secret,
+      deviceName: deviceLabel(),
+    });
     setConnected(true);
-    setOverlay('waiting for first frame…');
+    setOverlay('connecting…');
   };
   ws.onmessage = (event) => {
     if (typeof event.data === 'string') {
       const msg = JSON.parse(event.data);
-      if (msg.type === 'info') {
-        applyInfo(msg);
-      } else if (msg.type === 'status') {
-        setOverlay(msg.message);
+      switch (msg.type) {
+        case 'info':
+          setOverlay('waiting for first frame…');
+          applyInfo(msg);
+          break;
+        case 'status':
+          setOverlay(msg.message);
+          break;
+        case 'pairing':
+          // Holding the link only got us this far. Someone at the Mac has to agree, and the code
+          // is shown on both screens so they are approving this device and not somebody else's.
+          awaitingApproval = true;
+          setOverlay(`Approve on your Mac to continue.\n\nCode ${msg.code}`);
+          break;
+        case 'paired':
+          awaitingApproval = false;
+          saveDevice({ id: msg.deviceId, secret: msg.deviceSecret });
+          // The link has done its job. Drop it from the address bar so a bookmark, a screenshot or
+          // a shared URL no longer carries it.
+          history.replaceState(null, '', location.pathname);
+          setOverlay('approved — starting…');
+          break;
+        case 'denied':
+          awaitingApproval = false;
+          denied = true;
+          setOverlay('This Mac refused the request.');
+          break;
       }
       return;
     }
@@ -297,7 +372,9 @@ function connect() {
   };
   ws.onclose = () => {
     setConnected(false);
-    setOverlay('disconnected — retrying…');
+    if (denied) return;  // Reconnecting would only ask again and pester whoever said no.
+    setOverlay(awaitingApproval ? 'Approval timed out — retrying…' : 'disconnected — retrying…');
+    awaitingApproval = false;
     setTimeout(connect, 1000);
   };
   ws.onerror = () => ws.close();

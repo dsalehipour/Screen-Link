@@ -25,6 +25,11 @@ struct InputCommand: Decodable {
     var code: String?
     var text: String?
     var token: String?
+    /// Credential from a previous approval. Presented on its own it is enough to open a session;
+    /// without it the token only buys the right to ask for approval at the Mac.
+    var deviceId: String?
+    var deviceSecret: String?
+    var deviceName: String?
     var meta: Bool?
     var shift: Bool?
     var alt: Bool?

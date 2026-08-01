@@ -18,6 +18,13 @@ struct Config {
     /// CGDirectDisplayID to capture at startup; nil selects the main display.
     var displayID: UInt32?
 
+    /// Where anything that has to outlive a run is kept: the certificate and the approved devices.
+    static func supportDirectory() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        return base.appendingPathComponent("screenlink", isDirectory: true)
+    }
+
     static func randomToken() -> String {
         var bytes = [UInt8](repeating: 0, count: 16)
         _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
