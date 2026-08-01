@@ -10,3 +10,7 @@ build/
 *.p12
 *.key
 token
+
+# Node service
+node_modules/
+dist/
