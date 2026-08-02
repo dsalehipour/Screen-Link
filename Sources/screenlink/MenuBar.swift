@@ -47,8 +47,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         self.delegate = delegate
         super.init()
 
-        statusItem.button?.image = NSImage(systemSymbolName: "display",
-                                           accessibilityDescription: "screenlink")
+        // The product's own mark rather than a stock symbol, and a template so the system owns its
+        // colour: inverted on a dark menu bar, tinted while the menu is open. Rendered at 2x and
+        // declared at 18pt, which is the size the menu bar actually gives an item.
+        let glyph = AppIcon.menuBarGlyph(side: 36).map { image -> NSImage in
+            let icon = NSImage(cgImage: image, size: NSSize(width: 18, height: 18))
+            icon.isTemplate = true
+            return icon
+        }
+        statusItem.button?.image = glyph ?? NSImage(systemSymbolName: "display",
+                                                    accessibilityDescription: "screenlink")
         statusItem.button?.imagePosition = .imageLeading
 
         let menu = NSMenu()

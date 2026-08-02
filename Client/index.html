@@ -127,6 +127,16 @@
     pointer-events: none; opacity: 0; transition: opacity 0.25s; z-index: 3;
   }
   #toast.show { opacity: 1; }
+  /* Diagnostics for input that only misbehaves on a real phone. Reached by tapping the status dot
+     three times, because a phone cannot be attached to a debugger the way a desktop can. */
+  #debug {
+    position: absolute; left: 0; right: 0; bottom: 0; max-height: 45%; overflow-y: auto;
+    background: rgba(10,12,15,0.94); border-top: 1px solid var(--border); z-index: 4;
+    font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #9fe8a0; padding: 8px 10px; white-space: pre-wrap; word-break: break-all;
+  }
+  #debug.hidden { display: none; }
+  #debug b { color: #6ea8fe; }
 </style>
 </head>
 <body>
@@ -151,6 +161,7 @@
   <input id="keyboard-sink" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
   <div id="overlay">connecting…</div>
   <div id="toast"></div>
+  <div id="debug" class="hidden"></div>
 </main>
 
 <script>
@@ -215,6 +226,35 @@ function flash(text) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => toast.classList.remove('show'), 1400);
 }
+
+// A phone's keyboard cannot be watched from a desktop debugger, and it behaves differently from
+// every emulation of it, so it has to be able to describe itself. Three taps on the status dot.
+const CLIENT_BUILD = '2026-08-01c';
+const debugPanel = document.getElementById('debug');
+const debugLines = [];
+let debugOn = false;
+
+function debugLog(line) {
+  if (!debugOn) return;
+  debugLines.push(line);
+  if (debugLines.length > 40) debugLines.shift();
+  debugPanel.textContent = debugLines.join('\n');
+  debugPanel.scrollTop = debugPanel.scrollHeight;
+}
+
+let dotTaps = [];
+document.getElementById('dot').addEventListener('click', () => {
+  const now = Date.now();
+  dotTaps = dotTaps.filter((t) => now - t < 900);
+  dotTaps.push(now);
+  if (dotTaps.length < 3) return;
+  dotTaps = [];
+  debugOn = !debugOn;
+  debugPanel.classList.toggle('hidden', !debugOn);
+  debugLines.length = 0;
+  debugPanel.textContent = '';
+  if (debugOn) debugLog(`build ${CLIENT_BUILD} — ${navigator.userAgent}`);
+});
 
 let ws = null;
 let decoder = null;
@@ -850,6 +890,16 @@ function endTouch(e) {
     countReadOnlyTap();
   }
   gesture = null;
+
+  // Aiming at a field on the Mac means tapping the picture, and that can take focus off the hidden
+  // field the keyboard types into — after which the keyboard is still up and nothing it types
+  // arrives. Someone who asked for the keyboard is kept connected to it. Refocusing here rather
+  // than later keeps it inside the tap, which is the only time Android will reopen the keyboard.
+  if (keyboardWanted && document.activeElement !== keyboardSink) {
+    resetSink();
+    keyboardSink.focus();
+    debugLog('refocused the field after a tap on the picture');
+  }
 }
 
 canvas.addEventListener('touchend', endTouch, { passive: false });
@@ -857,44 +907,139 @@ canvas.addEventListener('touchcancel', endTouch, { passive: false });
 
 // ---- soft keyboard ---------------------------------------------------------
 
-// Android and iOS keyboards do not report usable key codes through keydown; most keys arrive as
-// "Unidentified". The reliable signal is beforeinput on a focused field, so typing is read from
-// there and sent as text, with editing keys mapped individually.
+// A phone keyboard does not report key presses. Most keys arrive as "Unidentified" with keyCode
+// 229, because the IME composes whole words and only settles on the text later — autocorrect,
+// suggestions and swipe typing have no keystrokes behind them at all.
+//
+// So the field's contents are mirrored to the Mac rather than its events: on every change, the new
+// value is diffed against what was last sent, and the difference goes out as backspaces followed by
+// text. Autocorrect turning "helo" into "hello" is one backspace and "lo", which is exactly what a
+// person would have typed, and swipe input arrives as a whole word.
 const keyboardSink = document.getElementById('keyboard-sink');
 
-keyboardSink.addEventListener('beforeinput', (e) => {
-  if (!controlling) return;
-  switch (e.inputType) {
-    case 'insertText':
-      if (e.data) send({ type: 'text', text: e.data });
-      break;
-    case 'insertLineBreak':
-    case 'insertParagraph':
-      send({ type: 'key', action: 'down', code: 'Enter' });
-      send({ type: 'key', action: 'up', code: 'Enter' });
-      break;
-    case 'deleteContentBackward':
-      send({ type: 'key', action: 'down', code: 'Backspace' });
-      send({ type: 'key', action: 'up', code: 'Backspace' });
-      break;
-    default:
-      break;
+// Backspace against an empty field produces no event whatsoever on Android, so the field is kept
+// padded and the caret parked at the end. The user eats padding; we forward a Backspace.
+const SINK_PAD = ' '.repeat(32);
+const PAD_FLOOR = 8;
+let mirrored = '';
+let padLeft = 0;
+let composing = false;
+let topUpTimer = 0;
+// Whether the user asked for the keyboard, as opposed to the field merely happening to have focus.
+let keyboardWanted = false;
+
+function resetSink() {
+  keyboardSink.value = SINK_PAD;
+  mirrored = SINK_PAD;
+  padLeft = SINK_PAD.length;
+  try { keyboardSink.setSelectionRange(SINK_PAD.length, SINK_PAD.length); } catch (_) {}
+}
+
+function flushSink() {
+  const next = keyboardSink.value;
+  if (next === mirrored) return;
+
+  // Only what the user typed into a focused field is theirs. A field that changes while it is not
+  // focused was reset by the browser, and replaying that as backspaces would eat their document.
+  if (document.activeElement !== keyboardSink) { resetSink(); return; }
+
+  let shared = 0;
+  const limit = Math.min(mirrored.length, next.length);
+  while (shared < limit && mirrored[shared] === next[shared]) shared++;
+  const removed = mirrored.length - shared;
+  const added = next.slice(shared);
+  mirrored = next;
+  padLeft = Math.min(padLeft, shared);
+
+  debugLog(`  -> back x${removed} text ${JSON.stringify(added)} pad=${padLeft}`);
+  if (!controlling) { flash('turn on control to type'); return; }
+  for (let i = 0; i < removed; i++) {
+    send({ type: 'key', action: 'down', code: 'Backspace' });
+    send({ type: 'key', action: 'up', code: 'Backspace' });
   }
+  if (added) send({ type: 'text', text: added });
+}
+
+// Rewriting the field is what breaks phone keyboards: do it while the IME has a word in flight and
+// typing stops dead, which is how this failed before. So the field is simply left alone. It is only
+// rebuilt once the padding has actually been eaten into, or it has grown absurd, and even then only
+// after typing pauses. Ordinary typing never triggers it.
+function scheduleTopUp() {
+  clearTimeout(topUpTimer);
+  if (padLeft >= PAD_FLOOR && keyboardSink.value.length < 4000) return;
+  topUpTimer = setTimeout(() => {
+    if (composing || document.activeElement !== keyboardSink) return;
+    debugLog('  -- refilling the field');
+    resetSink();
+  }, 400);
+}
+
+keyboardSink.addEventListener('compositionstart', () => { composing = true; });
+keyboardSink.addEventListener('compositionupdate', () => { composing = true; flushSink(); });
+keyboardSink.addEventListener('compositionend', () => {
+  composing = false;
+  flushSink();
+  scheduleTopUp();
 });
 
-// Never let text actually accumulate; the field exists only to summon the keyboard.
-keyboardSink.addEventListener('input', () => { keyboardSink.value = ''; });
+keyboardSink.addEventListener('input', (e) => {
+  // Gboard does not reliably fire compositionstart, so the inputType is the signal that actually
+  // tells us a word is still in flight. Trusting the events alone is what rewrote the field mid-word.
+  composing = e.inputType === 'insertCompositionText';
+  debugLog(`input ${e.inputType} ${JSON.stringify(e.data)} len=${keyboardSink.value.length}`);
+  flushSink();
+  scheduleTopUp();
+});
+
+// Keys that move or act rather than insert. These do come through with a real name, and since they
+// leave the field's contents alone the mirror above would never see them.
+const SINK_KEYS = new Set([
+  'Enter', 'Tab', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+  'Home', 'End', 'PageUp', 'PageDown', 'Delete',
+]);
+
+// Diagnostics only. `beforeinput` fires for changes that `input` sometimes does not report, so if
+// typing goes missing on a device, the difference between these two lines is where it went.
+keyboardSink.addEventListener('beforeinput', (e) => {
+  debugLog(`before ${e.inputType} ${JSON.stringify(e.data)}`);
+});
+keyboardSink.addEventListener('focus', () => debugLog('field focused'));
+keyboardSink.addEventListener('blur', () => debugLog('field blurred — typing stops here'));
+
+keyboardSink.addEventListener('keydown', (e) => {
+  if (!SINK_KEYS.has(e.key)) {
+    debugLog(`keydown ${e.key} (ignored, the field carries it)`);
+    return;
+  }
+  // Enter would otherwise try to submit, and Tab would move focus off the field.
+  e.preventDefault();
+  if (!controlling) { flash('turn on control to type'); return; }
+  send({ type: 'key', action: 'down', code: e.key, ...modifiers(e) });
+  send({ type: 'key', action: 'up', code: e.key, ...modifiers(e) });
+});
 
 document.getElementById('keyboard').addEventListener('click', () => {
-  if (document.activeElement === keyboardSink) keyboardSink.blur();
-  else keyboardSink.focus();
+  if (document.activeElement === keyboardSink) {
+    keyboardWanted = false;
+    keyboardSink.blur();
+    return;
+  }
+  // Typing into a read-only view looks broken, so the button turns control on with the keyboard.
+  if (!controlling) setControlling(true);
+  keyboardWanted = true;
+  resetSink();
+  keyboardSink.focus();
+  debugLog(`keyboard requested — controlling=${controlling} focused=${document.activeElement === keyboardSink}`);
 });
 
 zoomResetBtn.addEventListener('click', resetView);
 window.addEventListener('resize', applyView);
 
+// A physical keyboard reports real keys, so it is read directly. The soft keyboard owns its own
+// field and is handled above; letting these see those events too would send everything twice, and
+// would send nonsense besides, since an IME reports "Unidentified" for the keys it is composing.
 window.addEventListener('keydown', (e) => {
-  if (!controlling) return;
+  if (!controlling || e.target === keyboardSink) return;
   e.preventDefault();
   const printable = e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey;
   if (printable) {
@@ -906,7 +1051,7 @@ window.addEventListener('keydown', (e) => {
 });
 
 window.addEventListener('keyup', (e) => {
-  if (!controlling) return;
+  if (!controlling || e.target === keyboardSink) return;
   e.preventDefault();
   const printable = e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey;
   if (!printable) send({ type: 'key', action: 'up', code: e.code, ...modifiers(e) });

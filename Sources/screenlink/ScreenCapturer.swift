@@ -6,6 +6,9 @@ import ScreenCaptureKit
 
 protocol ScreenCapturerDelegate: AnyObject {
     func capturer(_ capturer: ScreenCapturer, didCapture pixelBuffer: CVPixelBuffer, pts: CMTime)
+    /// The stream died on its own. Unplugging the captured display does this, and the stream does not
+    /// come back by itself: without someone to rebuild it, the view stays frozen until a restart.
+    func capturerDidStop(_ capturer: ScreenCapturer, error: Error)
 }
 
 struct DisplayInfo: Encodable {
@@ -50,6 +53,9 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
     private(set) var displayID: CGDirectDisplayID = 0
     private(set) var width: Int = 0
     private(set) var height: Int = 0
+
+    /// Whether there is a live stream behind this. False after the system stops one out from under us.
+    var isRunning: Bool { stream != nil }
 
     // MARK: - Display enumeration
 
@@ -106,6 +112,13 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         stream = s
 
         Log.info("capturing display \(display.displayID) at \(w)x\(h) @ \(fps)fps")
+    }
+
+    /// Builds a fresh stream, for when the old one is beyond retargeting. Safe to call on a stream
+    /// that is already gone, which is the situation it exists for.
+    func restart(displayID requested: CGDirectDisplayID?) async throws {
+        await stop()
+        try await start(displayID: requested, maxWidth: maxWidth, fps: fps)
     }
 
     /// Retargets the live stream instead of tearing it down. The caller still has to restart the
@@ -229,5 +242,9 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         Log.error("capture stopped: \(error.localizedDescription)")
+        // The stream object is finished once it has stopped; retargeting it does nothing. Dropping it
+        // here is what makes `isRunning` honest, so the recovery path builds a new one.
+        if self.stream === stream { self.stream = nil }
+        delegate?.capturerDidStop(self, error: error)
     }
 }

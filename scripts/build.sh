@@ -13,6 +13,14 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/.build/release/screenlink" "$APP/Contents/MacOS/screenlink"
 cp -R "$ROOT/Client" "$APP/Contents/Resources/client"
 
+# Drawn from the app's own AppIcon.swift rather than kept as PNGs in the repository, so the Mac
+# icon, the browser tab and the phone home screen cannot drift apart.
+echo "==> drawing icon"
+swiftc -O "$ROOT/Sources/screenlink/AppIcon.swift" "$ROOT/scripts/iconset/main.swift" \
+  -o "$ROOT/build/iconset" >/dev/null
+"$ROOT/build/iconset" "$ROOT/build/screenlink.iconset" >/dev/null
+iconutil -c icns "$ROOT/build/screenlink.iconset" -o "$APP/Contents/Resources/screenlink.icns"
+
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -21,6 +29,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>
+	<string>screenlink</string>
+	<key>CFBundleIconFile</key>
 	<string>screenlink</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.screenlink.app</string>

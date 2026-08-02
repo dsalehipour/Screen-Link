@@ -372,7 +372,39 @@ final class Application: ScreenCapturerDelegate {
             await switchDisplay(to: fallback.id)
             return
         }
+        // Losing any display can stop the stream, not just the one being captured — the system tears
+        // it down and reports "no displays to capture" mid-reconfiguration. Retargeting cannot fix
+        // that, because there is nothing left to retarget.
+        if !capturer.isRunning {
+            await recoverCapture(to: capturer.displayID)
+            return
+        }
         broadcastInfo()
+    }
+
+    /// Rebuilds a stream the system stopped. Retried, because a display change arrives as a burst of
+    /// callbacks and the window in the middle of it has no capturable display at all.
+    func recoverCapture(to displayID: CGDirectDisplayID?) async {
+        for attempt in 1...5 {
+            do {
+                try await capturer.restart(displayID: displayID)
+                encoder.stop()
+                try encoder.start(width: capturer.width, height: capturer.height,
+                                  fps: config.fps, bitrate: bitrate(for: capturer.width, capturer.height))
+                discardLastFrame()
+                Log.info("capture recovered on display \(capturer.displayID)")
+                broadcastInfo()
+                return
+            } catch {
+                Log.warn("capture recovery attempt \(attempt) failed: \(error)")
+                try? await Task.sleep(nanoseconds: UInt64(attempt) * 400_000_000)
+            }
+        }
+        Log.error("capture could not be recovered; a restart is needed")
+    }
+
+    nonisolated func capturerDidStop(_ capturer: ScreenCapturer, error: Error) {
+        Task { await self.recoverCapture(to: nil) }
     }
 
     // MARK: - Capture

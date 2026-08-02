@@ -63,6 +63,10 @@ immediate.
 Nothing is sent to the Mac until a gesture can no longer turn out to be a pinch, so resting two
 fingers on the glass does not twitch the cursor.
 
+**Keyboard** raises the phone's keyboard, turning control on with it — a keyboard that types into a
+read-only view just looks broken. Autocorrect, suggestions and swipe typing all work, and land on
+the Mac as the words they settle on rather than the keys underneath them.
+
 ### On the home screen
 
 Chrome's **Add to Home screen** installs it as a standalone app: its own icon, no browser chrome,
@@ -74,6 +78,24 @@ The launcher opens `/` with no token, which works because approval is remembered
 consequences worth knowing: a tunnel address changes every time the app restarts, so the saved icon
 goes stale and the credential — being origin-scoped — is lost with it. A stable hostname avoids
 both.
+
+### The icon
+
+One mark, a pointer inside a screen, rendered five ways from `AppIcon.swift`: the phone's home
+screen, the browser tab, the Mac's `.icns`, and the menu bar. Nothing is stored as artwork, so none
+of them can drift out of step with the others.
+
+They differ only in framing, and not by preference. A phone masks the icon itself, so that one is
+drawn to full bleed. A Mac icon has to draw its own rounded tile inside the margin Apple's grid
+leaves — fill the square instead and it looks a size too large next to everything else in the Dock,
+which is the usual sign of an icon designed on another platform. The menu bar gets an outline rather
+than the solid mark, at the weight the system's own items use, and as a template image so macOS can
+invert it on a dark bar and tint it while the menu is open.
+
+`scripts/build.sh` renders the `.iconset` and runs `iconutil` on every build. It compiles
+`AppIcon.swift` into a throwaway tool (`scripts/iconset/`) rather than adding a mode to the app,
+because the app is a screen recorder, and a screen recorder should not grow command-line entry
+points that nobody audited.
 
 ### Resolution
 
@@ -141,6 +163,13 @@ soon as you flip the switch — no relaunch needed. Expect to repeat this after 
 `SCShareableContent` actually succeeded. `CGPreflightScreenCaptureAccess` predates ScreenCaptureKit
 and keeps reporting false long after capture is working, which is why nothing in this app gates on it.
 
+**The picture froze on "waiting for first frame" after a monitor was unplugged.** Losing a display
+stops the stream — the system reports "no displays to capture" during the reconfiguration, and a
+stopped `SCStream` cannot be retargeted, so pointing it at the surviving display did nothing and the
+view stayed dead until the app was restarted. The stream is now rebuilt from scratch when it stops,
+retried a few times because a display change arrives as a burst of callbacks and the moment in the
+middle of it has no capturable display at all.
+
 ## Why it is fast
 
 The pixels never pass through application code. ScreenCaptureKit produces NV12 IOSurfaces, which is
@@ -207,6 +236,38 @@ what it asked for knows the request did not land.
 Printable characters go through `text`, which injects Unicode directly and therefore works for any
 character and any keyboard layout without a reverse keycode lookup. Everything else goes through
 `key` with a `KeyboardEvent.code` that maps to a macOS virtual keycode.
+
+### Typing from a phone
+
+A phone keyboard does not emit key presses. Most keys arrive as `Unidentified` with keyCode 229,
+because the IME composes a word and only settles on the text later — autocorrect, suggestions and
+swipe typing have no keystrokes behind them at all.
+
+So the client mirrors a hidden field rather than listening for keys. On every change it diffs the
+field against what it last sent and forwards the difference: backspaces, then text. Autocorrect
+turning "helo" into "hello" becomes one `Backspace` and `"lo"`, which is what a person would have
+typed, and a swiped word arrives whole.
+
+Two details that are easy to get wrong, and did break this:
+
+- **The field must not be rewritten mid-word.** Clearing it after each keystroke desynchronises the
+  IME and typing stops dead after a few characters. Padding is only restored between words, when no
+  composition is in flight.
+- **Backspace on an empty field produces no event at all.** The field is kept padded with spaces and
+  the caret parked at the end, so there is always something for the user to delete.
+
+Keys that act rather than insert — Enter, Tab, arrows, Home/End, Delete — leave the field's contents
+alone, so the mirror would never see them. Those are read from `keydown`, where they do arrive with a
+real name.
+
+Aiming at a field on the Mac means tapping the picture, which can take focus off the hidden field.
+The keyboard stays up, so nothing looks wrong, and everything typed goes nowhere. Once the keyboard
+has been asked for, a tap on the picture puts focus back.
+
+If typing misbehaves on a device, tap the status dot three times. That opens a panel showing every
+input event as it arrives — `inputType`, data, whether the field is focused, and what went out on
+the wire. A phone cannot be attached to a debugger, and it does not behave like any emulation of
+one, so it has to be able to describe itself.
 
 ## Options
 
@@ -290,16 +351,30 @@ Client/index.html       WebCodecs viewer
 
 Checks. The browser ones drive a real Chromium over the DevTools protocol, because the IDE's
 embedded browser cannot render a certificate interstitial and emulated touch is the only honest way
-to test a gesture. Launch one with `--remote-debugging-port=9222` first.
+to test a gesture. Launch one detached, or the shell that started it will take it down with it:
+
+```bash
+open -na "Brave Browser" --args --remote-debugging-port=9222 --user-data-dir=/tmp/cdp-profile
+```
 
 ```bash
 node scripts/smoke.mjs                          # protocol, input mapping, display switching
 node scripts/pairing-check.mjs ws://127.0.0.1:8766 "$(cat build/token)"
 node scripts/pairing-queue-check.mjs ws://127.0.0.1:8766 "$(cat build/token)"
 node scripts/gesture-check.mjs http://127.0.0.1:8766/ "$(cat build/token)"
+node scripts/keyboard-check.mjs http://127.0.0.1:8766/ "$(cat build/token)"
 node scripts/touch-check.mjs "http://127.0.0.1:8766/#t=$(cat build/token)"
 node scripts/display-check.mjs http://127.0.0.1:8766/ "$(cat build/token)"
 ```
+
+`keyboard-check` composes words through `Input.imeSetComposition` rather than dispatching key
+events. Key events would exercise a path no phone actually takes, and would have passed happily
+while real typing was broken.
+
+It is also the one browser check that does not drive the Mac: typing is intercepted in the page and
+never reaches the socket, and one of its assertions is that nothing escaped. Keystrokes go wherever
+the keyboard is pointed, so an earlier version of it typed its own test words into an editor and
+pressed Return on them.
 
 Anything that answers a pairing prompt does so by matching the six-digit code (`approve.mjs`).
 Clicking whichever prompt happens to be up will eventually approve the wrong request and look like a
