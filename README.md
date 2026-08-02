@@ -163,12 +163,21 @@ soon as you flip the switch — no relaunch needed. Expect to repeat this after 
 `SCShareableContent` actually succeeded. `CGPreflightScreenCaptureAccess` predates ScreenCaptureKit
 and keeps reporting false long after capture is working, which is why nothing in this app gates on it.
 
-**The picture froze on "waiting for first frame" after a monitor was unplugged.** Losing a display
-stops the stream — the system reports "no displays to capture" during the reconfiguration, and a
-stopped `SCStream` cannot be retargeted, so pointing it at the surviving display did nothing and the
-view stayed dead until the app was restarted. The stream is now rebuilt from scratch when it stops,
-retried a few times because a display change arrives as a burst of callbacks and the moment in the
-middle of it has no capturable display at all.
+**The picture is stuck on "waiting for first frame".** The capture stream stopped and was not
+rebuilt. Losing a display does this, and so does the Mac going to sleep: the system reports "no
+displays to capture", and a stopped `SCStream` cannot be retargeted, so pointing it at a surviving
+display does nothing.
+
+The stream is rebuilt whenever it stops, and the retry has no attempt limit. That last part is the
+whole fix. A version that gave up after five tries spanning six seconds looked correct against an
+unplugged monitor and was useless against the case that actually happens: a Mac that dozes off has
+no shareable display for as long as it sleeps, so recovery failed and the phone saw a frozen picture
+for fifteen hours. Every reason this fails is temporary. Waking is also watched for directly, so
+recovery does not have to wait out a backoff, and an arriving client triggers a check of its own.
+
+`/health` reports `capturing` as whether a stream is genuinely alive, and `permitted` separately for
+whether screen recording was granted. It used to report only the latter under the former's name,
+which meant it said `capturing: true` throughout those fifteen hours.
 
 ## Why it is fast
 

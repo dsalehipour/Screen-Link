@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import CoreImage
 import CoreMedia
@@ -61,6 +62,13 @@ final class Application: ScreenCapturerDelegate {
         set { stateLock.lock(); _captureReady = newValue; stateLock.unlock() }
     }
 
+    /// Guards the recovery loop. Several things notice a dead stream at once — the stream's own
+    /// error, a display reconfiguration, a waking Mac, an arriving client — and they must not each
+    /// start their own retry loop against the same capturer.
+    private var recovering = false
+    /// Held because a block-based observer lives only as long as the token it hands back.
+    private var wakeObservers: [NSObjectProtocol] = []
+
     private var maxWidth: Int {
         get { stateLock.lock(); defer { stateLock.unlock() }; return _maxWidth }
         set { stateLock.lock(); _maxWidth = newValue; stateLock.unlock() }
@@ -103,7 +111,13 @@ final class Application: ScreenCapturerDelegate {
                 ? "capture running"
                 : "screen recording permission not granted — approve screenlink in System Settings > Privacy & Security > Screen & System Audio Recording, then rerun scripts/run.sh"
         }
-        server.onClientReady = { [weak self] in self?.nudge() }
+        // Someone arriving is the last chance to notice a dead stream, and the only one that matters
+        // to them: without this they get "waiting for first frame" and no reason for it.
+        server.onClientReady = { [weak self] in
+            guard let self else { return }
+            self.nudge()
+            Task { await self.recoverCaptureIfStopped() }
+        }
         server.onPairingRequest = { [weak self] request in self?.onPairingRequest?(request) }
         server.onPairingWithdrawn = { [weak self] requestId in self?.onPairingWithdrawn?(requestId) }
         server.onCommand = { [weak self] command in
@@ -228,6 +242,7 @@ final class Application: ScreenCapturerDelegate {
                 }
                 captureReady = true
                 watchDisplayChanges()
+                watchForWake()
                 Log.info("capture is live")
             } catch {
                 if attempt == 1 {
@@ -382,29 +397,65 @@ final class Application: ScreenCapturerDelegate {
         broadcastInfo()
     }
 
-    /// Rebuilds a stream the system stopped. Retried, because a display change arrives as a burst of
-    /// callbacks and the window in the middle of it has no capturable display at all.
+    /// Rebuilds a stream the system stopped, and keeps trying until it comes back.
+    ///
+    /// There is no attempt limit on purpose. A sleeping Mac has no shareable display for as long as
+    /// it sleeps, and an earlier version of this gave up after five tries spanning six seconds —
+    /// which meant a machine that dozed off was dead to the phone until someone restarted the app by
+    /// hand. Every reason this fails is temporary, so the only sound response is to keep asking.
     func recoverCapture(to displayID: CGDirectDisplayID?) async {
-        for attempt in 1...5 {
+        guard !recovering else { return }
+        recovering = true
+        defer { recovering = false }
+
+        var attempt = 0
+        while !Task.isCancelled {
+            attempt += 1
             do {
                 try await capturer.restart(displayID: displayID)
                 encoder.stop()
                 try encoder.start(width: capturer.width, height: capturer.height,
                                   fps: config.fps, bitrate: bitrate(for: capturer.width, capturer.height))
                 discardLastFrame()
-                Log.info("capture recovered on display \(capturer.displayID)")
+                Log.info("capture recovered on display \(capturer.displayID) after \(attempt) attempt(s)")
                 broadcastInfo()
                 return
             } catch {
-                Log.warn("capture recovery attempt \(attempt) failed: \(error)")
-                try? await Task.sleep(nanoseconds: UInt64(attempt) * 400_000_000)
+                // Quiet after the first few. A Mac asleep overnight would otherwise write thousands
+                // of identical lines, burying whatever actually goes wrong next.
+                if attempt <= 3 || attempt % 60 == 0 {
+                    Log.warn("capture recovery attempt \(attempt) failed: \(error)")
+                }
+                let backoff = min(0.4 * pow(2, Double(attempt - 1)), 5)
+                try? await Task.sleep(nanoseconds: UInt64(backoff * 1_000_000_000))
             }
         }
-        Log.error("capture could not be recovered; a restart is needed")
     }
 
     nonisolated func capturerDidStop(_ capturer: ScreenCapturer, error: Error) {
         Task { await self.recoverCapture(to: nil) }
+    }
+
+    /// Waking is the moment a sleep-stopped stream can actually be rebuilt, so it is worth not
+    /// waiting out a backoff to discover that. Harmless if capture is already running.
+    private func watchForWake() {
+        let names: [NSNotification.Name] = [
+            NSWorkspace.didWakeNotification,
+            NSWorkspace.screensDidWakeNotification,
+        ]
+        let center: NotificationCenter = NSWorkspace.shared.notificationCenter
+        for name in names {
+            let observer = center.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+                guard let self else { return }
+                Task { await self.recoverCaptureIfStopped() }
+            }
+            wakeObservers.append(observer)
+        }
+    }
+
+    func recoverCaptureIfStopped() async {
+        guard captureReady, !capturer.isRunning else { return }
+        await recoverCapture(to: nil)
     }
 
     // MARK: - Capture
@@ -485,7 +536,12 @@ final class Application: ScreenCapturerDelegate {
         case "/health":
             respond(.json([
                 "ok": true,
-                "capturing": captureReady,
+                // `capturing` is whether a stream is actually alive, not merely whether permission
+                // was granted and one was started once. Reporting the latter meant this said
+                // "capturing: true" while the picture had been frozen for fifteen hours.
+                "capturing": captureReady && capturer.isRunning,
+                "permitted": captureReady,
+                "recovering": recovering,
                 "accessibility": Permissions.hasAccessibility(prompt: false),
                 "width": capturer.width,
                 "height": capturer.height,
@@ -599,7 +655,7 @@ extension Application: MenuBarDelegate {
         let active = displays.first { $0.id == capturer.displayID }
         return MenuBarState(url: publicURL(),
                             networkEnabled: config.bindHost != "127.0.0.1",
-                            capturing: captureReady,
+                            capturing: captureReady && capturer.isRunning,
                             accessibility: Permissions.hasAccessibility(prompt: false),
                             viewers: server.clientCount,
                             fingerprint: certificateFingerprint,
