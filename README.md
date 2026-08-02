@@ -65,7 +65,14 @@ fingers on the glass does not twitch the cursor.
 
 **Keyboard** raises the phone's keyboard, turning control on with it — a keyboard that types into a
 read-only view just looks broken. Autocorrect, suggestions and swipe typing all work, and land on
-the Mac as the words they settle on rather than the keys underneath them.
+the Mac as the words they settle on rather than the keys underneath them. It goes away again with
+the button, with the phone's own dismiss, or when control is turned off.
+
+Tapping the picture while the keyboard is up aims at a field on the Mac and keeps typing, which
+takes a little care: the tap moves focus off the hidden field the keyboard feeds, leaving a keyboard
+that looks fine and types nowhere. So focus is put back — but only when the keyboard was up as the
+finger landed. Dismissing the keyboard looks identical from the page's side, so anything remembered
+for longer than the tap cannot tell the two apart, and drags the keyboard back up on every touch.
 
 ### On the home screen
 
@@ -269,14 +276,22 @@ Keys that act rather than insert — Enter, Tab, arrows, Home/End, Delete — le
 alone, so the mirror would never see them. Those are read from `keydown`, where they do arrive with a
 real name.
 
-Aiming at a field on the Mac means tapping the picture, which can take focus off the hidden field.
-The keyboard stays up, so nothing looks wrong, and everything typed goes nowhere. Once the keyboard
-has been asked for, a tap on the picture puts focus back.
+Aiming at a field on the Mac means tapping the picture, which takes focus off the hidden field. The
+keyboard stays up, so nothing looks wrong, and everything typed goes nowhere. Focus is put back, but
+only when the keyboard was already up as the finger landed — dismissing the keyboard blurs the field
+in exactly the same way, so anything remembered for longer than the tap cannot tell a dismissal from
+a tap, and hauls the keyboard back up on every touch afterwards.
+
+A change that arrives while the field is not focused is not the user typing, so it is never replayed
+as keystrokes. It is adopted rather than rewritten, for the same reason as above: the IME may still
+have a word in flight, and it writes the whole of that word again when focus returns. Rewriting the
+field forgets the part already sent, and "hello" lands as "hellhello".
 
 If typing misbehaves on a device, tap the status dot three times. That opens a panel showing every
 input event as it arrives — `inputType`, data, whether the field is focused, and what went out on
 the wire. A phone cannot be attached to a debugger, and it does not behave like any emulation of
-one, so it has to be able to describe itself.
+one, so it has to be able to describe itself. `keyboard-check` turns the same log on and prints it
+whenever a typing check fails, since the protocol on its own cannot say which of these went wrong.
 
 ## Options
 

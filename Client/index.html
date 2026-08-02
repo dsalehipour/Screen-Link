@@ -229,7 +229,7 @@ function flash(text) {
 
 // A phone's keyboard cannot be watched from a desktop debugger, and it behaves differently from
 // every emulation of it, so it has to be able to describe itself. Three taps on the status dot.
-const CLIENT_BUILD = '2026-08-01c';
+const CLIENT_BUILD = '2026-08-02a';
 const debugPanel = document.getElementById('debug');
 const debugLines = [];
 let debugOn = false;
@@ -610,6 +610,9 @@ function setControlling(enabled) {
   controlBtn.classList.toggle('on', controlling);
   controlBtn.textContent = controlling ? 'Control enabled' : 'Enable control';
   canvas.classList.toggle('controlling', controlling);
+  // A keyboard over a read-only view types into nothing, so it leaves with control rather than
+  // sitting over half the picture waiting for keys that will be dropped.
+  if (!controlling && document.activeElement === keyboardSink) keyboardSink.blur();
 }
 
 // Three quick taps turn control on, so it can be reached without aiming at the bar. Only while
@@ -752,6 +755,9 @@ function beginPress() {
 canvas.addEventListener('touchstart', (e) => {
   e.preventDefault();
   const count = e.touches.length;
+  // Noted before the tap can disturb anything, because whether the keyboard was up when the finger
+  // landed is what decides if it should still be up when the finger lifts.
+  keyboardWasUp = document.activeElement === keyboardSink;
 
   // Two or more fingers always mean the view, never the Mac. If a press was already in flight,
   // undo it so a pinch cannot leave a button held down or drag something across the desktop.
@@ -891,11 +897,14 @@ function endTouch(e) {
   }
   gesture = null;
 
-  // Aiming at a field on the Mac means tapping the picture, and that can take focus off the hidden
+  // Aiming at a field on the Mac means tapping the picture, and that takes focus off the hidden
   // field the keyboard types into — after which the keyboard is still up and nothing it types
-  // arrives. Someone who asked for the keyboard is kept connected to it. Refocusing here rather
-  // than later keeps it inside the tap, which is the only time Android will reopen the keyboard.
-  if (keyboardWanted && document.activeElement !== keyboardSink) {
+  // arrives. So focus is put back, but only if the keyboard was up when this tap started.
+  //
+  // That condition is the whole point. Dismissing the keyboard blurs the field too, so a flag
+  // remembering that the keyboard had once been asked for cannot tell the two apart, and every
+  // subsequent tap anywhere on the picture drags the keyboard back up.
+  if (keyboardWasUp && document.activeElement !== keyboardSink) {
     resetSink();
     keyboardSink.focus();
     debugLog('refocused the field after a tap on the picture');
@@ -925,8 +934,8 @@ let mirrored = '';
 let padLeft = 0;
 let composing = false;
 let topUpTimer = 0;
-// Whether the user asked for the keyboard, as opposed to the field merely happening to have focus.
-let keyboardWanted = false;
+// Whether the keyboard was up when the current touch began, sampled before the touch can change it.
+let keyboardWasUp = false;
 
 function resetSink() {
   keyboardSink.value = SINK_PAD;
@@ -940,8 +949,15 @@ function flushSink() {
   if (next === mirrored) return;
 
   // Only what the user typed into a focused field is theirs. A field that changes while it is not
-  // focused was reset by the browser, and replaying that as backspaces would eat their document.
-  if (document.activeElement !== keyboardSink) { resetSink(); return; }
+  // focused was changed by the browser, and replaying that as backspaces would eat their document.
+  // It is adopted rather than rewritten: rewriting it here forgets a word the IME still has in
+  // flight, so the rest of that word diffs against padding and the whole of it is sent a second
+  // time — "hello" arriving as "hellhello". Padding is restored on the next pause instead.
+  if (document.activeElement !== keyboardSink) {
+    mirrored = next;
+    padLeft = Math.min(padLeft, next.length);
+    return;
+  }
 
   let shared = 0;
   const limit = Math.min(mirrored.length, next.length);
@@ -1020,13 +1036,11 @@ keyboardSink.addEventListener('keydown', (e) => {
 
 document.getElementById('keyboard').addEventListener('click', () => {
   if (document.activeElement === keyboardSink) {
-    keyboardWanted = false;
     keyboardSink.blur();
     return;
   }
   // Typing into a read-only view looks broken, so the button turns control on with the keyboard.
   if (!controlling) setControlling(true);
-  keyboardWanted = true;
   resetSink();
   keyboardSink.focus();
   debugLog(`keyboard requested — controlling=${controlling} focused=${document.activeElement === keyboardSink}`);
