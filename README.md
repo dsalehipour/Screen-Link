@@ -24,6 +24,25 @@ One download, two permission toggles, one QR code. Nothing to install on the pho
 port forwarding, no configuration file. You need an Apple Silicon Mac on macOS 14 or later; the full
 list is under [Requirements](#requirements).
 
+Click **Reach this Mac from anywhere**, scan the code with your phone, and approve the device when the
+Mac asks. That is the entire setup, and all of it happens while you are stood at the computer — from
+then on you can walk away and watch and control this Mac from your phone, from anywhere in the world.
+
+<table>
+<tr>
+<td width="50%" valign="top"><img src="docs/menu-qr.png" alt="The screenlink menu, showing a QR code with Reach this Mac from anywhere turned on"></td>
+<td width="50%" valign="top"><img src="docs/approve-device.png" alt="A prompt on the Mac showing pairing code 498222 and asking whether Chrome on Android may connect"></td>
+</tr>
+<tr>
+<td valign="top"><b>One click, one scan.</b> Turning on <i>Reach this Mac from anywhere</i> puts a public web address in front of the Mac and shows it as a QR code. Any phone camera opens it — there is nothing to install on the phone.</td>
+<td valign="top"><b>Nothing connects without you.</b> Scanning only asks. The Mac shows a code, the phone shows the same code, and until you press Approve that device gets nothing — no picture, no control.</td>
+</tr>
+</table>
+
+Approve it once and that phone can come back whenever it likes. Every *other* device that finds the
+link is a separate question you have to answer at the Mac, and you can withdraw any of them later from
+the same menu.
+
 ### 1. Get the app
 
 **Download it** — [latest release](https://github.com/dsalehipour/Screen-Link/releases/latest/download/screenlink.zip)
