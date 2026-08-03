@@ -9,7 +9,8 @@ About 17 ms from capture to the browser's decoder at the default 1920 px, 56 fps
 Cloudflare tunnel — see [Measured](#measured).
 
 **[Download the latest release](https://github.com/dsalehipour/Screen-Link/releases/latest/download/screenlink.zip)**
-— 565 KB, Apple Silicon, macOS 14+. That link always resolves to the newest build. See
+— 566 KB, Apple Silicon, macOS 14+. That link always resolves to the newest build; the
+[releases page](https://github.com/dsalehipour/Screen-Link/releases/latest) has the notes. See
 [Connect your phone](#connect-your-phone) for the two permissions and the first-open step.
 
 Two consumers on one core:
@@ -19,15 +20,17 @@ Two consumers on one core:
 
 ## Connect your phone
 
-Three commands, two permission toggles, one QR code. Nothing to install on the phone, no account, no
+One download, two permission toggles, one QR code. Nothing to install on the phone, no account, no
 port forwarding, no configuration file. You need an Apple Silicon Mac on macOS 14 or later; the full
 list is under [Requirements](#requirements).
 
 ### 1. Get the app
 
 **Download it** — [latest release](https://github.com/dsalehipour/Screen-Link/releases/latest/download/screenlink.zip)
-is a 565 KB zip. Unzip it and put `screenlink.app` wherever you keep apps. That link always points at
-the newest release, and the repository is private, so it needs a GitHub account with access to it.
+is a 566 KB zip. Unzip it and put `screenlink.app` wherever you keep apps. That link always points at
+the newest release. The repository is private, so it needs a GitHub account with access; signed out
+it returns a 404, and if it does, the [releases page](https://github.com/dsalehipour/Screen-Link/releases/latest)
+lists the same file.
 
 It will refuse to open the first time. The build is signed but not notarized, which needs a paid
 Apple Developer ID, so macOS quarantines it like anything else off the internet. Open it, let it be
