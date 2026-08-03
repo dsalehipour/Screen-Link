@@ -536,6 +536,10 @@ final class Application: ScreenCapturerDelegate {
         case "/health":
             respond(.json([
                 "ok": true,
+                // Answerable without reaching the machine, which is the point once copies of this
+                // are downloaded and running somewhere else.
+                "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
+                "revision": Bundle.main.infoDictionary?["SLGitRevision"] as? String ?? "unknown",
                 // `capturing` is whether a stream is actually alive, not merely whether permission
                 // was granted and one was started once. Reporting the latter meant this said
                 // "capturing: true" while the picture had been frozen for fifteen hours.

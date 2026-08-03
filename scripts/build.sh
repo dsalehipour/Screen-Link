@@ -21,7 +21,13 @@ swiftc -O "$ROOT/Sources/screenlink/AppIcon.swift" "$ROOT/scripts/iconset/main.s
 "$ROOT/build/iconset" "$ROOT/build/screenlink.iconset" >/dev/null
 iconutil -c icns "$ROOT/build/screenlink.iconset" -o "$APP/Contents/Resources/screenlink.icns"
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+# Stamped in one place, from the tag when releasing and from git otherwise, so a running copy can
+# always say which build it is. Defaults make a local build obviously not a release.
+VERSION="${VERSION:-0.0.0-dev}"
+REVISION="${REVISION:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
+if [ -n "$(git status --porcelain 2>/dev/null)" ]; then REVISION="$REVISION-dirty"; fi
+
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -41,9 +47,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>${VERSION}</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>${VERSION}</string>
+	<key>SLGitRevision</key>
+	<string>${REVISION}</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
@@ -74,6 +82,6 @@ fi
 codesign --verify --verbose=1 "$APP"
 
 echo
-echo "built $APP"
+echo "built $APP ($VERSION, $REVISION)"
 echo "requirement: $(codesign -d -r- "$APP" 2>&1 | sed -n 's/^designated => //p')"
 echo "run: scripts/run.sh"

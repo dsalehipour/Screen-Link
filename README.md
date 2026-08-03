@@ -8,6 +8,10 @@ real system events.
 About 17 ms from capture to the browser's decoder at the default 1920 px, 56 fps, measured over a
 Cloudflare tunnel — see [Measured](#measured).
 
+**[Download the latest release](https://github.com/dsalehipour/Screen-Link/releases/latest/download/screenlink.zip)**
+— 565 KB, Apple Silicon, macOS 14+. That link always resolves to the newest build. See
+[Connect your phone](#connect-your-phone) for the two permissions and the first-open step.
+
 Two consumers on one core:
 
 - **Human** — low-latency H.264 video stream decoded in the browser with WebCodecs.
@@ -19,7 +23,18 @@ Three commands, two permission toggles, one QR code. Nothing to install on the p
 port forwarding, no configuration file. You need an Apple Silicon Mac on macOS 14 or later; the full
 list is under [Requirements](#requirements).
 
-### 1. Build and run it
+### 1. Get the app
+
+**Download it** — [latest release](https://github.com/dsalehipour/Screen-Link/releases/latest/download/screenlink.zip)
+is a 565 KB zip. Unzip it and put `screenlink.app` wherever you keep apps. That link always points at
+the newest release, and the repository is private, so it needs a GitHub account with access to it.
+
+It will refuse to open the first time. The build is signed but not notarized, which needs a paid
+Apple Developer ID, so macOS quarantines it like anything else off the internet. Open it, let it be
+blocked, then go to **System Settings > Privacy & Security**, find the note about screenlink near the
+bottom, and click **Open Anyway**. Or `xattr -d com.apple.quarantine /path/to/screenlink.app`.
+
+**Or build it** — three commands, and no Gatekeeper argument:
 
 ```bash
 scripts/setup-signing.sh   # once, so permissions survive rebuilds
@@ -34,10 +49,12 @@ The first run is denied both and says so. Both live in System Settings > Privacy
 - **Screen & System Audio Recording** — required. Without it there is no capture.
 - **Accessibility** — required for input injection. Capture works without it; control does not.
 
-Grant them, then run `scripts/run.sh` again. With the signing identity from step 1 in place you only
-do this once, no matter how many times you rebuild.
+Grant them and start it again. You do this once and only once: every build is signed with the same
+certificate, so macOS recognises an updated copy as the same app and the grants carry over — whether
+you are installing a new release or rebuilding from source.
 
-A screenlink icon appears in the menu bar. Everything below happens there.
+A screenlink icon appears in the menu bar. There is no window, at any point. Everything below happens
+in that menu.
 
 ### 3. Choose how far it should reach
 
@@ -83,10 +100,11 @@ pan the picture itself, and **Keyboard** raises your phone's keyboard. The full 
 
 ## Requirements
 
-- Apple Silicon Mac, macOS 14+
-- Swift 6 toolchain (Xcode Command Line Tools is enough; full Xcode is not needed)
+- Apple Silicon Mac, macOS 14+. The build is arm64 only, so Intel Macs are out
 - A WebCodecs browser: Chrome, Edge, Brave, or Safari 16.4+
 - `cloudflared` only if you want the reach-from-anywhere option
+- Swift 6 toolchain only if you build from source (Xcode Command Line Tools is enough; full Xcode is
+  not needed)
 
 ## The menu bar
 
@@ -101,6 +119,7 @@ The whole app is one menu. From the top:
 | **Allow access from my network** | LAN access, on or off |
 | **Reach this Mac from anywhere** | Cloudflare tunnel, on or off |
 | **Disconnect all devices and reset link** | Drops every live connection and issues a new token, so a link that got out stops working. Devices you already approved stay approved and can reconnect |
+| **screenlink 0.1.0 (abc1234)** | Which build this is. `/health` reports the same two values |
 | **Quit screenlink** | Stops capture and closes everything |
 
 The icon shows the number of connected viewers and turns green while anyone is watching. macOS draws
@@ -370,7 +389,7 @@ All routes except `/` and `/health` require `?token=<token>`, which `scripts/run
 | Route | Description |
 | --- | --- |
 | `GET /` | The viewer page. An empty shell — the token is never substituted into it |
-| `GET /health` | Capture state and permission status |
+| `GET /health` | Capture state, permission status, and the running version and git revision |
 | `GET /screenshot` | Single JPEG frame via `SCScreenshotManager` |
 | `POST /command` | Inject one input command |
 
@@ -500,3 +519,26 @@ product failure.
 
 `gesture-check` and `smoke` drive the Mac for real — they move the pointer and press buttons. Run
 them when the desktop underneath can tolerate a stray click.
+
+### Releasing
+
+```bash
+scripts/release.sh 0.1.0
+```
+
+Builds with the version stamped in, packages the bundle, tags, and publishes a GitHub release. It
+refuses to run on a dirty tree, off `main`, on a commit that is not on `origin/main`, or if the app
+came out ad-hoc signed — the last one because an ad-hoc release would look like a different app to
+macOS and force everyone who updated to grant their permissions again.
+
+The asset is always called `screenlink.zip`, which is what makes
+`releases/latest/download/screenlink.zip` a permanent link. Versioning the filename would break that
+link on every release, so the version lives inside the app instead: in the menu and in `/health`.
+
+Packaging uses `ditto`, not `zip`, because a bundle's signature is computed over extended attributes
+and symlinks that `zip` does not carry. The script unpacks its own artifact and re-verifies the
+signature before publishing, since a download whose signature no longer holds would silently cost
+every user their permissions on update.
+
+Nothing is notarized, so a downloaded copy is refused on first open until it is allowed in System
+Settings. Fixing that properly needs a paid Apple Developer ID.

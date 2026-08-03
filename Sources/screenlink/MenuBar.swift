@@ -126,6 +126,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        menu.addItem(caption(Self.versionLabel))
         let quit = NSMenuItem(title: "Quit screenlink", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
@@ -371,6 +372,18 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             .foregroundColor: NSColor.secondaryLabelColor,
         ])
         return item
+    }
+
+    /// Read from the bundle rather than compiled in, so the build stamps it in one place. Shown
+    /// because a downloaded copy is otherwise indistinguishable from any other, and "which version
+    /// are you on" is the first question any report of a fixed bug has to answer.
+    static var versionLabel: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "unknown"
+        guard let revision = info?["SLGitRevision"] as? String, !revision.isEmpty else {
+            return "screenlink \(version)"
+        }
+        return "screenlink \(version) (\(revision))"
     }
 
     private static func dot(_ ok: Bool) -> NSImage? {
