@@ -1,17 +1,23 @@
+<div align="center">
+
+<img src="docs/icon.png" alt="" width="104" height="104">
+
 # screenlink
 
-Watch and control this Mac from a browser — including your phone, from anywhere. A native Swift app
-captures the screen with ScreenCaptureKit, encodes it on the hardware H.264 engine, and streams it to
-a web page over a WebSocket. The page sends mouse and keyboard events back, which are injected as
-real system events.
+**Watch and control your Mac from your phone. From anywhere.**
 
-About 17 ms from capture to the browser's decoder at the default 1920 px, 56 fps, measured over a
-Cloudflare tunnel — see [Measured](#measured).
+[![Latest release](https://img.shields.io/badge/release-v0.1.0-3fb950?style=flat-square&labelColor=30363d)](https://github.com/dsalehipour/Screen-Link/releases/latest) [![macOS 14+](https://img.shields.io/badge/macOS-14+-6e7781?style=flat-square&labelColor=30363d&logo=apple&logoColor=white)](#requirements) [![Swift 6](https://img.shields.io/badge/Swift-6-6e7781?style=flat-square&labelColor=30363d&logo=swift&logoColor=white)](#why-it-is-fast) [![17 ms end to end](https://img.shields.io/badge/latency-17_ms-6e7781?style=flat-square&labelColor=30363d)](#measured)
 
-**[Download the latest release](https://github.com/dsalehipour/Screen-Link/releases/latest/download/screenlink.zip)**
-— 566 KB, Apple Silicon, macOS 14+. That link always resolves to the newest build; the
-[releases page](https://github.com/dsalehipour/Screen-Link/releases/latest) has the notes. See
-[Connect your phone](#connect-your-phone) for the two permissions and the first-open step.
+<a href="https://github.com/dsalehipour/Screen-Link/releases/latest/download/screenlink.zip"><img src="https://img.shields.io/badge/Download%20for%20macOS-238636?style=for-the-badge&logo=apple&logoColor=white" alt="Download screenlink for macOS" height="42"></a>
+
+<sub>566 KB · Apple Silicon · macOS 14 or later · always the newest build · <a href="https://github.com/dsalehipour/Screen-Link/releases/latest">release notes</a> · <a href="#connect-your-phone">two-minute setup</a></sub>
+
+</div>
+
+A native Swift app captures the screen with ScreenCaptureKit, encodes it on the hardware H.264 engine,
+and streams it to a web page over a WebSocket. The page sends mouse and keyboard events back, which
+are injected as real system events. About 17 ms from capture to the browser's decoder at the default
+1920 px, 56 fps, measured over a Cloudflare tunnel — see [Measured](#measured).
 
 Two consumers on one core:
 
@@ -28,16 +34,16 @@ Click **Reach this Mac from anywhere**, scan the code with your phone, and appro
 Mac asks. That is the entire setup, and all of it happens while you are stood at the computer — from
 then on you can walk away and watch and control this Mac from your phone, from anywhere in the world.
 
-<table>
-<tr>
-<td width="50%" valign="top"><img src="docs/menu-qr.png" alt="The screenlink menu, showing a QR code with Reach this Mac from anywhere turned on"></td>
-<td width="50%" valign="top"><img src="docs/approve-device.png" alt="A prompt on the Mac showing pairing code 498222 and asking whether Chrome on Android may connect"></td>
-</tr>
-<tr>
-<td valign="top"><b>One click, one scan.</b> Turning on <i>Reach this Mac from anywhere</i> puts a public web address in front of the Mac and shows it as a QR code. Any phone camera opens it — there is nothing to install on the phone.</td>
-<td valign="top"><b>Nothing connects without you.</b> Scanning only asks. The Mac shows a code, the phone shows the same code, and until you press Approve that device gets nothing — no picture, no control.</td>
-</tr>
-</table>
+<p align="center">
+<img src="docs/menu-qr.png" alt="The screenlink menu, showing a QR code with Reach this Mac from anywhere turned on">
+&nbsp;
+<img src="docs/approve-device.png" alt="A prompt on the Mac showing pairing code 498222 and asking whether Chrome on Android may connect">
+</p>
+
+Turning on *Reach this Mac from anywhere* puts a public web address in front of the Mac and shows it as
+a QR code, which any phone camera opens — there is nothing to install on the phone. Scanning it only
+*asks*. The Mac shows a code, the phone shows the same code, and until you press **Approve** that
+device gets nothing: no picture, no control.
 
 Approve it once and that phone can come back whenever it likes. Every *other* device that finds the
 link is a separate question you have to answer at the Mac, and you can withdraw any of them later from

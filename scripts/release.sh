@@ -58,6 +58,21 @@ fi
 
 PREVIOUS="$(git describe --tags --abbrev=0 2>/dev/null || true)"
 
+# The README badge cannot read the version off the repository the way shields.io normally would,
+# because shields.io cannot see a private one. So it is a literal string, and moving it forward has
+# to happen here or it quietly goes stale and advertises an old version forever.
+echo "==> stamping the README badge"
+BADGE_VERSION="${VERSION//-/--}"  # shields.io reads a single hyphen as a field separator
+sed -i '' -E "s|badge/release-v[^?]*\?style|badge/release-v${BADGE_VERSION}-3fb950?style|" "$ROOT/README.md"
+if ! git diff --quiet -- README.md; then
+  git add README.md
+  git commit -q -m "Point the README release badge at $TAG"
+  git push origin main --quiet
+  echo "    badge now reads v$VERSION"
+else
+  echo "    badge already reads v$VERSION"
+fi
+
 echo "==> building $TAG"
 VERSION="$VERSION" "$ROOT/scripts/build.sh"
 
