@@ -64,7 +64,11 @@ VERSION="$VERSION" "$ROOT/scripts/build.sh"
 # An ad-hoc signature would make every release a different app as far as TCC is concerned, so
 # everyone who updated would have to grant screen recording and accessibility again. Worth failing
 # the release over rather than discovering from a confused download.
-if ! codesign -dvv "$APP" 2>&1 | grep -q '^Authority=screenlink-dev'; then
+# Captured before matching rather than piped into grep: codesign writes this to stderr a line at a
+# time, so `grep -q` exiting on the match leaves codesign writing into a closed pipe, and pipefail
+# reports the SIGPIPE as a failed check. The guard then fires on correctly signed builds.
+SIGNATURE="$(codesign -dvv "$APP" 2>&1 || true)"
+if [[ "$SIGNATURE" != *"Authority=screenlink-dev"* ]]; then
   echo "app is not signed with the screenlink-dev certificate; run scripts/setup-signing.sh" >&2
   exit 1
 fi
