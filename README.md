@@ -1,45 +1,111 @@
 # screenlink
 
-Lets a browser see and control this Mac. A native Swift app captures the screen with
-ScreenCaptureKit, encodes it on the hardware H.264 engine, and streams it to a local web page over
-a WebSocket. The page sends mouse and keyboard events back, which are injected as real system events.
+Watch and control this Mac from a browser — including your phone, from anywhere. A native Swift app
+captures the screen with ScreenCaptureKit, encodes it on the hardware H.264 engine, and streams it to
+a web page over a WebSocket. The page sends mouse and keyboard events back, which are injected as
+real system events.
+
+About 17 ms from capture to the browser's decoder at the default 1920 px, 56 fps, measured over a
+Cloudflare tunnel — see [Measured](#measured).
 
 Two consumers on one core:
 
 - **Human** — low-latency H.264 video stream decoded in the browser with WebCodecs.
 - **Agent** — `GET /screenshot` for a JPEG and `POST /command` for input, no video pipeline involved.
 
-## Requirements
+## Connect your phone
 
-- Apple Silicon Mac, macOS 14+
-- Swift 6 toolchain (Xcode Command Line Tools is enough; full Xcode is not needed)
-- A WebCodecs browser: Chrome, Edge, or Safari 16.4+
+Three commands, two permission toggles, one QR code. Nothing to install on the phone, no account, no
+port forwarding, no configuration file. You need an Apple Silicon Mac on macOS 14 or later; the full
+list is under [Requirements](#requirements).
 
-## Quick start
+### 1. Build and run it
 
 ```bash
 scripts/setup-signing.sh   # once, so permissions survive rebuilds
 scripts/build.sh           # compile, assemble screenlink.app, sign
-scripts/run.sh             # launch and print the URL
+scripts/run.sh             # launch
 ```
 
-Grant Screen Recording and Accessibility when prompted. With the signing identity in place you only
-have to do that once, no matter how many times you rebuild.
+### 2. Grant two permissions
 
-The first run will be denied both permissions and will tell you so. Grant them, then rerun:
+The first run is denied both and says so. Both live in System Settings > Privacy & Security:
 
 - **Screen & System Audio Recording** — required. Without it there is no capture.
 - **Accessibility** — required for input injection. Capture works without it; control does not.
 
-Both live in System Settings > Privacy & Security. macOS requires a relaunch after granting, which
-`scripts/run.sh` handles by restarting the app each time.
+Grant them, then run `scripts/run.sh` again. With the signing identity from step 1 in place you only
+do this once, no matter how many times you rebuild.
 
-Open the printed URL, then click **Enable control** to start forwarding input.
+A screenlink icon appears in the menu bar. Everything below happens there.
 
-```bash
-node scripts/smoke.mjs   # end-to-end protocol check
-scripts/stop.sh
-```
+### 3. Choose how far it should reach
+
+Click the icon. It starts as **This Mac only** — nothing is listening on the network at all. Turn on
+whichever of these you want:
+
+| Menu item | Reaches | Worth knowing |
+| --- | --- | --- |
+| **Allow access from my network** | anything on the same Wi-Fi | HTTPS with a self-signed certificate, so the phone shows a warning to tap through the first time |
+| **Reach this Mac from anywhere** | anywhere with internet | Needs `brew install cloudflared`. Cloudflare presents a real certificate, so no warning — but they can see the screen |
+
+### 4. Scan the QR code
+
+The menu now shows **Scan with your phone** and a QR code. Point your phone's camera at it and open
+the link. That is the entire handoff — the link carries the token with it, so there is nothing to
+type. **Copy link** is next to it if you would rather send it to yourself.
+
+On the internet option the code appears once Cloudflare has assigned an address, which takes a few
+seconds; until then the menu says so.
+
+### 5. Approve it once
+
+Opening the link does not grant anything. Both screens show the same six-digit code:
+
+- **The phone** — "Approve on your Mac to continue." above the code.
+- **This Mac** — an alert titled "Pairing code 418305", with **Deny** and **Approve**.
+
+Check they match, click **Approve**, and the picture appears. Deny is the default button, so leaning
+on the return key cannot let something in.
+
+That is once per device, not once per session. The phone keeps its approval, so from then on you open
+the link — or the home-screen icon — and the picture is simply there, with no code and no token.
+
+### 6. Touch it
+
+The view arrives read-only, so nothing you do reaches the Mac until you ask. **Three quick taps** on
+the picture turn control on. From then on a tap is a click, a drag is a drag, two fingers pinch and
+pan the picture itself, and **Keyboard** raises your phone's keyboard. The full set is under
+[Using it from a phone](#using-it-from-a-phone).
+
+> **Just this Mac?** Skip steps 3–5. `scripts/run.sh` prints a `127.0.0.1` link; open it and click
+> **Enable control**.
+
+## Requirements
+
+- Apple Silicon Mac, macOS 14+
+- Swift 6 toolchain (Xcode Command Line Tools is enough; full Xcode is not needed)
+- A WebCodecs browser: Chrome, Edge, Brave, or Safari 16.4+
+- `cloudflared` only if you want the reach-from-anywhere option
+
+## The menu bar
+
+The whole app is one menu. From the top:
+
+| Item | What it does |
+| --- | --- |
+| **Scan with your phone** | QR code for the current link, and **Copy link** |
+| **Screen recording** / **Input control** | A checkmark when granted, a warning when not. Click a missing one to open the settings pane for it |
+| **Sharing _display_** | Which display is being streamed |
+| **Approved devices** | Every paired device, when it was last seen, and **Revoke this device**. **Revoke all devices** below |
+| **Allow access from my network** | LAN access, on or off |
+| **Reach this Mac from anywhere** | Cloudflare tunnel, on or off |
+| **Disconnect all devices and reset link** | Drops every live connection and issues a new token, so a link that got out stops working. Devices you already approved stay approved and can reconnect |
+| **Quit screenlink** | Stops capture and closes everything |
+
+The icon shows the number of connected viewers and turns green while anyone is watching. macOS draws
+its own screen-recording indicator alongside it whenever capture is live, which this app cannot
+suppress or fake.
 
 ## Using it from a phone
 
@@ -55,24 +121,34 @@ The view starts read-only, so nothing you do reaches the Mac until you say so.
 | Press and hold | — | right-click |
 | Double tap | — | double-click |
 
-Turning control back off is the button in the bar, which stays above the picture at any zoom.
-Triple tap only turns control on: once it is on, every tap is a click, and holding each one back
-long enough to rule out a third would put a visible delay on the thing that most needs to feel
-immediate.
+And in the bar across the top:
+
+| Button | Does |
+| --- | --- |
+| **Enable control** | Turns input on and off. Reads **Control enabled** while it is on |
+| **Keyboard** | Raises the phone's keyboard, turning control on with it |
+| **Fit** | Undoes any zoom and pan |
+| **Fullscreen** | Hands the whole screen to the picture |
+| Display picker | Which of the Mac's displays to watch. Hidden if there is only one |
+| Resolution picker | **Fast**, **Balanced**, **Sharp**, **Full resolution** |
+
+The bar stays above the picture at any zoom, so control can always be turned back off. Triple tap
+only turns it on: once it is on, every tap is a click, and holding each one back long enough to rule
+out a third would put a visible delay on the thing that most needs to feel immediate.
 
 Nothing is sent to the Mac until a gesture can no longer turn out to be a pinch, so resting two
 fingers on the glass does not twitch the cursor.
 
-**Keyboard** raises the phone's keyboard, turning control on with it — a keyboard that types into a
-read-only view just looks broken. Autocorrect, suggestions and swipe typing all work, and land on
-the Mac as the words they settle on rather than the keys underneath them. It goes away again with
-the button, with the phone's own dismiss, or when control is turned off.
+**Keyboard** turns control on with it, because a keyboard that types into a read-only view just looks
+broken. Autocorrect, suggestions and swipe typing all work, and land on the Mac as the words they
+settle on rather than the keys underneath them. It goes away again with the button, with the phone's
+own dismiss, or when control is turned off.
 
-Tapping the picture while the keyboard is up aims at a field on the Mac and keeps typing, which
-takes a little care: the tap moves focus off the hidden field the keyboard feeds, leaving a keyboard
-that looks fine and types nowhere. So focus is put back — but only when the keyboard was up as the
-finger landed. Dismissing the keyboard looks identical from the page's side, so anything remembered
-for longer than the tap cannot tell the two apart, and drags the keyboard back up on every touch.
+Tapping the picture while the keyboard is up aims at a field on the Mac and keeps typing, which takes
+a little care: the tap moves focus off the hidden field the keyboard feeds, leaving a keyboard that
+looks fine and types nowhere. So focus is put back — but only when the keyboard was up as the finger
+landed. Dismissing the keyboard looks identical from the page's side, so anything remembered for
+longer than the tap cannot tell the two apart, and drags the keyboard back up on every touch.
 
 ### On the home screen
 
@@ -88,7 +164,7 @@ both.
 
 ### The icon
 
-One mark, a pointer inside a screen, rendered five ways from `AppIcon.swift`: the phone's home
+One mark, a pointer inside a screen, rendered four ways from `AppIcon.swift`: the phone's home
 screen, the browser tab, the Mac's `.icns`, and the menu bar. Nothing is stored as artwork, so none
 of them can drift out of step with the others.
 
@@ -129,6 +205,54 @@ down on a weak connection.
 
 Those figures cover capture, hardware encode, and transport. Browser decode and compositing add
 roughly 10–25 ms on top.
+
+## Reaching the Mac
+
+Three ways, in increasing order of exposure. All three are the menu items from step 3, or the flags
+in [Options](#options) if you would rather start that way.
+
+**This Mac only** is the default: loopback, nothing on the network.
+
+**Your network** binds one chosen LAN address, never `0.0.0.0`, and turns on TLS with a self-signed
+certificate. Browsers show a warning the first time. Tapping through it is safe enough here but does
+leave you unable to tell a real warning from an attacker's, which is part of why approval is
+required. The certificate's fingerprint is shown in the menu so it can be compared against what the
+browser reports.
+
+**Anywhere** runs `cloudflared` and keeps the server on loopback, so nothing listens on your network
+at all. Cloudflare presents a real certificate, so there is no warning. Two things to know: the
+address changes each time it starts, and Cloudflare terminates TLS, so they can see the screen and
+the keystrokes. If that matters, put Cloudflare Access in front of the hostname or use a mesh VPN
+instead.
+
+## Security
+
+This app can see and control everything on the machine, so treat it accordingly.
+
+- **The link is not access.** A device presents a credential from an earlier approval, or else the
+  token only buys a request that someone at this Mac has to agree to. A six-digit code is shown on
+  both screens and has to match, so a second party holding the link cannot be waved through by
+  someone who assumes the prompt is about their own phone. Approved devices are listed in the menu
+  bar and can be revoked, individually or all at once.
+- Credentials are stored as SHA-256 hashes, so a copy of `devices.json` opens nothing.
+- The token travels in the URL fragment, which browsers never send to a server. It stays out of
+  request lines, access logs and the Referer header, and is not substituted into the page.
+- Wrong tokens are counted per source address and throttled.
+- A pairing request expires after two minutes. The prompt closes itself, and approving one that has
+  already lapsed grants nothing.
+- `--no-input` gives a read-only stream, and the browser client starts read-only.
+- macOS shows its own screen-recording indicator in the menu bar whenever capture is live. That
+  indicator is drawn by the system and this app cannot suppress or fake it.
+
+Two limits worth knowing: input cannot be injected into secure input contexts, so password fields
+and the login window will ignore it; and this design could never ship on the Mac App Store, since
+Accessibility-based input injection for remote control is not permitted there.
+
+### Still missing
+
+Sessions do not expire, so a revoked device is cut off but an approved one stays approved
+indefinitely. There is no origin allowlist. And a raw WebSocket gives you no congestion control or
+retransmission, which WebRTC would; over a tunnel on a bad connection that difference shows.
 
 ## Troubleshooting
 
@@ -186,6 +310,10 @@ recovery does not have to wait out a backoff, and an arriving client triggers a 
 whether screen recording was granted. It used to report only the latter under the former's name,
 which meant it said `capturing: true` throughout those fifteen hours.
 
+**The phone asks to pair again.** Approval is stored in the browser against the exact address it was
+granted for. A new tunnel address is a new origin, so the credential does not carry over — scan the
+QR again. Clearing site data or browsing privately loses it too.
+
 ## Why it is fast
 
 The pixels never pass through application code. ScreenCaptureKit produces NV12 IOSurfaces, which is
@@ -210,6 +338,30 @@ The choices that actually matter for latency here, in rough order:
 The language is close to irrelevant to throughput here, which is why this is Swift: every expensive
 step is a dedicated hardware block, and Swift is the shortest path to the frameworks that drive them.
 
+## Options
+
+`scripts/run.sh` passes anything it does not recognise straight through, so `scripts/run.sh --lan`
+starts with network access already on.
+
+```
+--port N          default 8766 (HTTP and WebSocket share it)
+--fps N           default 60
+--max-width N     default 1920; 0 captures the panel's own pixels. Changeable at runtime
+                  from the viewer, so this only sets the starting point
+--bitrate N       default 12000000 at 1920×1080, scaled by pixel count from there
+--no-input        serve video but ignore all input commands
+--token S         shared secret
+--host H          interface to bind; defaults to 127.0.0.1
+--tls             serve HTTPS with a self-signed certificate
+--lan             bind the primary LAN address and turn on TLS
+--tunnel          open a Cloudflare tunnel and stay on loopback
+--client PATH     serve the viewer from this file instead of the bundle copy
+--log PATH        also write logs here
+```
+
+`scripts/run.sh` always prints the loopback address. The reachable one for `--lan` and `--tunnel`
+goes to the log it tails, and to the QR code in the menu.
+
 ## HTTP API
 
 All routes except `/` and `/health` require `?token=<token>`, which `scripts/run.sh` writes to
@@ -217,7 +369,7 @@ All routes except `/` and `/health` require `?token=<token>`, which `scripts/run
 
 | Route | Description |
 | --- | --- |
-| `GET /` | The viewer page, with the token injected |
+| `GET /` | The viewer page. An empty shell — the token is never substituted into it |
 | `GET /health` | Capture state and permission status |
 | `GET /screenshot` | Single JPEG frame via `SCScreenshotManager` |
 | `POST /command` | Inject one input command |
@@ -293,68 +445,6 @@ the wire. A phone cannot be attached to a debugger, and it does not behave like 
 one, so it has to be able to describe itself. `keyboard-check` turns the same log on and prints it
 whenever a typing check fails, since the protocol on its own cannot say which of these went wrong.
 
-## Options
-
-```
---port N          default 8766 (HTTP and WebSocket share it)
---fps N           default 60
---max-width N     default 1920; 0 captures the panel's own pixels. Changeable at runtime
-                  from the viewer, so this only sets the starting point
---bitrate N       default 12000000 at 1920×1080, scaled by pixel count from there
---no-input        serve video but ignore all input commands
---token S         shared secret
---host H          interface to bind; defaults to 127.0.0.1
---tls             serve HTTPS with a self-signed certificate
---lan             bind the primary LAN address and turn on TLS
---tunnel          open a Cloudflare tunnel and stay on loopback
---client PATH     serve the viewer from this file instead of the bundle copy
---log PATH        also write logs here
-```
-
-## Reaching the Mac
-
-Three ways, in increasing order of exposure.
-
-**This Mac only** is the default: loopback, nothing on the network.
-
-**Your network** binds one chosen LAN address, never `0.0.0.0`, and turns on TLS with a self-signed
-certificate. Browsers show a warning the first time. Tapping through it is safe enough here but does
-leave you unable to tell a real warning from an attacker's, which is part of why approval is
-required below.
-
-**Anywhere** runs `cloudflared` and keeps the server on loopback, so nothing listens on your network
-at all. Cloudflare presents a real certificate, so there is no warning. Two things to know: the
-address changes each time it starts, and Cloudflare terminates TLS, so they can see the screen and
-the keystrokes. If that matters, put Cloudflare Access in front of the hostname or use a mesh VPN
-instead.
-
-## Security
-
-This app can see and control everything on the machine, so treat it accordingly.
-
-- **The link is not access.** A device presents a credential from an earlier approval, or else the
-  token only buys a request that someone at this Mac has to agree to. A six-digit code is shown on
-  both screens and has to match, so a second party holding the link cannot be waved through by
-  someone who assumes the prompt is about their own phone. Approved devices are listed in the menu
-  bar and can be revoked, individually or all at once.
-- Credentials are stored as SHA-256 hashes, so a copy of `devices.json` opens nothing.
-- The token travels in the URL fragment, which browsers never send to a server. It stays out of
-  request lines, access logs and the Referer header, and is not substituted into the page.
-- Wrong tokens are counted per source address and throttled.
-- `--no-input` gives a read-only stream, and the browser client starts read-only.
-- macOS shows its own screen-recording indicator in the menu bar whenever capture is live. That
-  indicator is drawn by the system and this app cannot suppress or fake it.
-
-Two limits worth knowing: input cannot be injected into secure input contexts, so password fields
-and the login window will ignore it; and this design could never ship on the Mac App Store, since
-Accessibility-based input injection for remote control is not permitted there.
-
-### Still missing
-
-Sessions do not expire, so a revoked device is cut off but an approved one stays approved
-indefinitely. There is no origin allowlist. And a raw WebSocket gives you no congestion control or
-retransmission, which WebRTC would; over a tunnel on a bad connection that difference shows.
-
 ## Development
 
 `scripts/run.sh` points the server at `Client/index.html` on disk, so the viewer can be edited and
@@ -370,6 +460,10 @@ Sources/screenlink/
   KeyMap.swift          KeyboardEvent.code -> macOS virtual keycodes
   WebSocketServer.swift video out, input in
   HTTPServer.swift      minimal HTTP/1.1 over Network.framework
+  MenuBar.swift         the menu, the QR code, the pairing prompt
+  DeviceStore.swift     pairing requests and approved devices
+  TunnelController.swift  cloudflared
+  AppIcon.swift         every icon, drawn
 Client/index.html       WebCodecs viewer
 ```
 
@@ -395,7 +489,7 @@ node scripts/display-check.mjs http://127.0.0.1:8766/ "$(cat build/token)"
 events. Key events would exercise a path no phone actually takes, and would have passed happily
 while real typing was broken.
 
-It is also the one browser check that does not drive the Mac: typing is intercepted in the page and
+It is also the one browser check that does not drive the Mac: input is intercepted in the page and
 never reaches the socket, and one of its assertions is that nothing escaped. Keystrokes go wherever
 the keyboard is pointed, so an earlier version of it typed its own test words into an editor and
 pressed Return on them.
