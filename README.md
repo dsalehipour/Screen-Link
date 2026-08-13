@@ -6,7 +6,7 @@
 
 **Watch and control your Mac from your phone. From anywhere.**
 
-[![Latest release](https://img.shields.io/badge/release-v0.1.0-3fb950?style=flat-square&labelColor=30363d)](https://github.com/dsalehipour/Screen-Link/releases/latest) [![macOS 14+](https://img.shields.io/badge/macOS-14+-6e7781?style=flat-square&labelColor=30363d&logo=apple&logoColor=white)](#requirements) [![Swift 6](https://img.shields.io/badge/Swift-6-6e7781?style=flat-square&labelColor=30363d&logo=swift&logoColor=white)](#why-it-is-fast) [![17 ms end to end](https://img.shields.io/badge/latency-17_ms-6e7781?style=flat-square&labelColor=30363d)](#measured)
+[![Latest release](https://img.shields.io/badge/release-v0.2.0-3fb950?style=flat-square&labelColor=30363d)](https://github.com/dsalehipour/Screen-Link/releases/latest) [![macOS 14+](https://img.shields.io/badge/macOS-14+-6e7781?style=flat-square&labelColor=30363d&logo=apple&logoColor=white)](#requirements) [![Swift 6](https://img.shields.io/badge/Swift-6-6e7781?style=flat-square&labelColor=30363d&logo=swift&logoColor=white)](#why-it-is-fast) [![17 ms end to end](https://img.shields.io/badge/latency-17_ms-6e7781?style=flat-square&labelColor=30363d)](#measured)
 
 <a href="https://github.com/dsalehipour/Screen-Link/releases/latest/download/screenlink.zip"><img src="https://img.shields.io/badge/Download%20for%20macOS-238636?style=for-the-badge&logo=apple&logoColor=white" alt="Download screenlink for macOS" height="42"></a>
 
