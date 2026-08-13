@@ -152,8 +152,8 @@ final class Application: ScreenCapturerDelegate {
                 Log.info("internet link open: \(publicURL())")
             case .failed(let reason):
                 Log.error("internet link failed: \(reason)")
-            case .starting:
-                Log.info("opening internet link…")
+            case .connecting(let detail):
+                Log.info("internet link: \(detail)")
             case .off:
                 Log.info("internet link closed")
             }
@@ -666,7 +666,8 @@ extension Application: MenuBarDelegate {
                             displayName: active?.name ?? "your screen",
                             devices: devices.approved,
                             tunnel: tunnel.state,
-                            tunnelInstalled: TunnelController.isInstalled)
+                            tunnelInstalled: TunnelController.isInstalled,
+                            tunnelWanted: tunnel.isActive)
     }
 
     func menuBarResolvePairing(requestId: String, approved: Bool) {

@@ -12,13 +12,10 @@ struct MenuBarState {
     var devices: [PairedDevice]
     var tunnel: TunnelController.State
     var tunnelInstalled: Bool
-
-    var tunnelActive: Bool {
-        switch tunnel {
-        case .running, .starting: return true
-        case .off, .failed: return false
-        }
-    }
+    /// Whether the tunnel is meant to be up, which the switch follows rather than the state below.
+    /// Intent is known the instant it is clicked; the state behind it takes a moment to catch up,
+    /// and a checkmark that lags the click by a moment reads as a click that did not register.
+    var tunnelWanted: Bool
 }
 
 protocol MenuBarDelegate: AnyObject {
@@ -39,6 +36,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private weak var delegate: MenuBarDelegate?
     private var refreshTimer: Timer?
+    /// Runs only while the menu is open, and redraws it when what it says stops being true.
+    private var liveTimer: Timer?
+    private var shownSignature = ""
     /// Requests queued behind the one on screen, and the one being shown.
     private var waiting: [PairingRequest] = []
     private var presenting: PairingRequest?
@@ -79,21 +79,75 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        menu.removeAllItems()
         guard let state = delegate?.menuBarState() else { return }
+        rebuild(menu, state: state)
+    }
+
+    /// Keeps an open menu honest.
+    ///
+    /// `menuNeedsUpdate` is only asked before the menu appears, which was fine when everything it
+    /// said was true the moment it was drawn. A link takes twenty-odd seconds to come up, and the
+    /// person who asked for it is looking at the menu for all of them, so what it says has to be
+    /// allowed to change underneath them. A menu is tracked in its own run loop mode, so the timer
+    /// has to be added to the common modes by hand — scheduled the ordinary way it stops firing at
+    /// precisely the moment it starts mattering.
+    func menuWillOpen(_ menu: NSMenu) {
+        liveTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self, weak menu] _ in
+            guard let self, let menu, let state = delegate?.menuBarState() else { return }
+            guard Self.signature(state) != shownSignature else { return }
+            rebuild(menu, state: state)
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        liveTimer = timer
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        liveTimer?.invalidate()
+        liveTimer = nil
+    }
+
+    /// What the menu is currently claiming, so a redraw only happens when the claim changes.
+    /// Anything that is not laid out here — the viewer count, when a device was last seen — is left
+    /// out deliberately: rebuilding for those would collapse a submenu somebody was reading.
+    private static func signature(_ state: MenuBarState) -> String {
+        let tunnel: String
+        switch state.tunnel {
+        case .off: tunnel = "off"
+        case .connecting(let detail): tunnel = "connecting:\(detail)"
+        case .running(let url): tunnel = "running:\(url)"
+        case .failed(let reason): tunnel = "failed:\(reason)"
+        }
+        return [state.url, tunnel, state.displayName, state.fingerprint ?? "",
+                "\(state.networkEnabled)", "\(state.capturing)", "\(state.accessibility)",
+                "\(state.tunnelInstalled)", "\(state.tunnelWanted)",
+                state.devices.map(\.id).joined(separator: ",")].joined(separator: "|")
+    }
+
+    private func rebuild(_ menu: NSMenu, state: MenuBarState) {
+        shownSignature = Self.signature(state)
+        menu.removeAllItems()
 
         switch state.tunnel {
         case .running:
             addQRSection(to: menu, state: state)
             menu.addItem(caption("Reachable from anywhere. Cloudflare can see this screen."))
-        case .starting:
+        // No code while there is no link. Showing the last one would be showing a code that fails,
+        // and a failing code is worse than none: it gets scanned, it goes nowhere, and the screen
+        // that produced it says nothing about why.
+        case .connecting(let detail):
             menu.addItem(header("Opening internet link…"))
-            menu.addItem(caption("Waiting for Cloudflare to assign an address."))
+            menu.addItem(caption(detail))
         case .failed(let reason):
             menu.addItem(header("Internet link failed"))
             menu.addItem(caption(reason))
         case .off:
-            if state.networkEnabled {
+            if state.tunnelWanted {
+                // Switched on a moment ago and the controller has not got there yet. Saying so beats
+                // a flash of "This Mac only" under a switch that is already ticked.
+                menu.addItem(header("Opening internet link…"))
+                menu.addItem(caption("Starting cloudflared."))
+            } else if state.networkEnabled {
                 addQRSection(to: menu, state: state)
             } else {
                 addLocalOnlySection(to: menu)
@@ -110,15 +164,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let toggle = NSMenuItem(title: "Allow access from my network",
-                                action: #selector(toggleNetwork), keyEquivalent: "")
-        toggle.target = self
-        toggle.state = state.networkEnabled ? .on : .off
-        menu.addItem(toggle)
+        menu.addItem(stayOpenToggle(title: "Allow access from my network",
+                                    isOn: state.networkEnabled,
+                                    action: #selector(toggleNetwork)))
 
         addTunnelToggle(to: menu, state: state)
 
-        if state.networkEnabled || state.tunnelActive {
+        if state.networkEnabled || state.tunnelWanted {
             let rotate = NSMenuItem(title: "Disconnect all devices and reset link",
                                     action: #selector(rotateToken), keyEquivalent: "")
             rotate.target = self
@@ -191,12 +243,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             return
         }
 
-        let item = NSMenuItem(title: "Reach this Mac from anywhere",
-                              action: #selector(toggleTunnel), keyEquivalent: "")
-        item.target = self
-        item.state = state.tunnelActive ? .on : .off
-        menu.addItem(item)
-        if !state.tunnelActive {
+        menu.addItem(stayOpenToggle(title: "Reach this Mac from anywhere",
+                                    isOn: state.tunnelWanted,
+                                    action: #selector(toggleTunnel)))
+        if !state.tunnelWanted {
             // Said before it is switched on, not after, because afterwards the link already exists.
             menu.addItem(caption("Creates a public web address. Devices still need approval here."))
         }
@@ -320,12 +370,31 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         delegate?.menuBarRevokeAllDevices()
     }
 
-    @objc private func toggleNetwork(_ sender: NSMenuItem) {
-        delegate?.menuBarSetNetworkAccess(sender.state != .on)
+    /// A switch that leaves the menu standing, so the thing it starts can be watched arriving.
+    private func stayOpenToggle(title: String, isOn: Bool, action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.view = MenuToggleView(title: title, isOn: isOn, target: self, action: action)
+        return item
     }
 
-    @objc private func toggleTunnel(_ sender: NSMenuItem) {
-        delegate?.menuBarSetTunnel(sender.state != .on)
+    /// Read from the delegate rather than the sender: the switch is drawn by its own view now, so
+    /// there is no menu item state to consult, and the truth was never in the checkmark anyway.
+    @objc private func toggleNetwork(_ sender: Any?) {
+        guard let state = delegate?.menuBarState() else { return }
+        delegate?.menuBarSetNetworkAccess(!state.networkEnabled)
+        redrawOpenMenu()
+    }
+
+    @objc private func toggleTunnel(_ sender: Any?) {
+        guard let state = delegate?.menuBarState() else { return }
+        delegate?.menuBarSetTunnel(!state.tunnelWanted)
+        redrawOpenMenu()
+    }
+
+    /// Answers the click immediately, rather than leaving it unacknowledged until the next tick.
+    private func redrawOpenMenu() {
+        guard let menu = statusItem.menu, let state = delegate?.menuBarState() else { return }
+        rebuild(menu, state: state)
     }
 
     @objc private func rotateToken() {

@@ -49,6 +49,14 @@ Approve it once and that phone can come back whenever it likes. Every *other* de
 link is a separate question you have to answer at the Mac, and you can withdraw any of them later from
 the same menu.
 
+The link looks after itself. Every code you are shown has been checked from the Mac, through
+Cloudflare and back, within the last few seconds — so a code on screen is one that works, and if the
+link goes down while you are away the menu says so instead of offering it. Links do go down: the Mac
+sleeps, the wifi changes, and Cloudflare eventually lets go of a tunnel nobody is using. When that
+happens a new one is built without being asked, which means the web address changes. Approved devices
+are unaffected and stay approved — but a link you saved will stop working, so scan the code again
+rather than reaching for a bookmark. Only turning *Reach this Mac from anywhere* off stops any of this.
+
 ### 1. Get the app
 
 **Download it** — [latest release](https://github.com/dsalehipour/Screen-Link/releases/latest/download/screenlink.zip)
