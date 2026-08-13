@@ -166,6 +166,28 @@ suppress or fake.
 
 The view starts read-only, so nothing you do reaches the Mac until you say so.
 
+Here is the same Mac on a small tablet and on a phone. There is no app on either — it is a browser
+tab. Everything below the dark bar is the Mac itself, live.
+
+<p align="center">
+<img src="docs/on-a-tablet.jpg" alt="A small tablet showing an entire Mac desktop inside a browser tab, with the screenlink toolbar above it" width="840">
+</p>
+
+Given the width, the whole desktop fits at once and the bar sits in one row. The green dot on the
+left is the stream being live. This is the shape most of it gets used in: read the screen, tap
+something, carry on. The menu on the Mac is screenlink's own, open on the machine being watched —
+its QR code is deliberately smudged here, because that one is a working link.
+
+<p align="center">
+<img src="docs/on-a-phone.jpg" alt="A phone showing the same Mac zoomed to 507 percent, with the screenlink toolbar wrapped onto two rows" width="300">
+</p>
+
+A phone is not wide enough for a 3456-pixel desktop to be worth looking at whole, so you pinch to
+zoom and drag to pan, and read a corner of it at a time — the text above is a Mac menu bar at
+five times its own size. The bar wraps onto a second row and stays above the picture at any zoom, so
+control can always be turned back off. **Fit** becomes the current zoom while you are zoomed in
+(**507%** there); tapping it puts the whole screen back.
+
 | Gesture | Read-only | Controlling |
 | --- | --- | --- |
 | One finger drag | pans the view | drags on the Mac |
