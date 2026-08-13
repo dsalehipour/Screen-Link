@@ -40,6 +40,17 @@ then on you can walk away and watch and control this Mac from your phone, from a
 <img src="docs/approve-device.png" alt="A prompt on the Mac showing pairing code 498222 and asking whether Chrome on Android may connect">
 </p>
 
+Approve it, and that is the Mac — the whole screen, live in a browser tab, with nothing installed on
+the device holding it:
+
+<p align="center">
+<img src="docs/on-a-tablet.jpg" alt="A small tablet showing an entire Mac desktop live inside a browser tab, with the screenlink toolbar above it" width="840">
+</p>
+
+The menu inside that picture is screenlink's own, open on the Mac being watched; its QR code is
+smudged deliberately, because that one was a live link. What it is actually like to use — the
+gestures, the zoom, the keyboard — is under [Using it from a phone](#using-it-from-a-phone).
+
 Turning on *Reach this Mac from anywhere* puts a public web address in front of the Mac and shows it as
 a QR code, which any phone camera opens — there is nothing to install on the phone. Scanning it only
 *asks*. The Mac shows a code, the phone shows the same code, and until you press **Approve** that
@@ -166,27 +177,19 @@ suppress or fake.
 
 The view starts read-only, so nothing you do reaches the Mac until you say so.
 
-Here is the same Mac on a small tablet and on a phone. There is no app on either — it is a browser
-tab. Everything below the dark bar is the Mac itself, live.
+Given a small tablet's width — [the picture further up](#connect-your-phone) — the whole desktop fits
+at once and the bar sits in one row. That is the shape most of it gets used in: read the screen, tap
+something, carry on. A phone has no such width, so you pinch to zoom and drag to pan, and read a
+corner at a time:
 
 <p align="center">
-<img src="docs/on-a-tablet.jpg" alt="A small tablet showing an entire Mac desktop inside a browser tab, with the screenlink toolbar above it" width="840">
+<img src="docs/on-a-phone.jpg" alt="A phone showing a Mac zoomed to 507 percent, with the screenlink toolbar wrapped onto two rows" width="300">
 </p>
 
-Given the width, the whole desktop fits at once and the bar sits in one row. The green dot on the
-left is the stream being live. This is the shape most of it gets used in: read the screen, tap
-something, carry on. The menu on the Mac is screenlink's own, open on the machine being watched —
-its QR code is deliberately smudged here, because that one is a working link.
-
-<p align="center">
-<img src="docs/on-a-phone.jpg" alt="A phone showing the same Mac zoomed to 507 percent, with the screenlink toolbar wrapped onto two rows" width="300">
-</p>
-
-A phone is not wide enough for a 3456-pixel desktop to be worth looking at whole, so you pinch to
-zoom and drag to pan, and read a corner of it at a time — the text above is a Mac menu bar at
-five times its own size. The bar wraps onto a second row and stays above the picture at any zoom, so
-control can always be turned back off. **Fit** becomes the current zoom while you are zoomed in
-(**507%** there); tapping it puts the whole screen back.
+That is a Mac menu bar at five times its own size. The bar wraps onto a second row and stays above
+the picture at any zoom, so control can always be turned back off, and the green dot at its left is
+the stream being live. **Fit** becomes the current zoom while you are zoomed in (**507%** there);
+tapping it puts the whole screen back.
 
 | Gesture | Read-only | Controlling |
 | --- | --- | --- |
